@@ -3,492 +3,621 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>条码配对核查 Pro Max</title>
+    <title>仓库配对终端 (云同步版)</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 引入HTML5-QRCODE 库 -->
     <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+    
+    <!-- 引入 Firebase 依赖 (用于云同步数据) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // === 全局 Firebase 变量和配置 (必须在 window 上暴露以便非模块脚本访问) ===
+        window.initializeApp = initializeApp;
+        window.getAuth = getAuth;
+        window.signInAnonymously = signInAnonymously;
+        window.signInWithCustomToken = signInWithCustomToken;
+        window.onAuthStateChanged = onAuthStateChanged;
+        window.getFirestore = getFirestore;
+        window.doc = doc;
+        window.setDoc = setDoc;
+        window.onSnapshot = onSnapshot;
+
+        window.db = null;
+        window.auth = null;
+        window.userId = null;
+        window.isAuthReady = false;
+
+        // 全局变量已由 Canvas 环境注入
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        // 公共数据路径：所有用户共享一份配对列表
+        window.PUBLIC_DOC_PATH = `/artifacts/${appId}/public/data/pairs/pairing_list`;
+        window.firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        window.initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+    </script>
+
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; touch-action: manipulation; }
-        /* 强制全屏黑底 */
-        #reader { width: 100%; height: 100%; background: #000; }
-        #reader video { object-fit: cover; width: 100%; height: 100%; }
-        /* 隐藏库自带的UI元素 */
-        #reader__dashboard_section_csr span, #reader__dashboard_section_swaplink { display: none !important; }
+        body { font-family: sans-serif; touch-action: manipulation; background-color: #f3f4f6; overflow: hidden; }
         
-        /* 扫描动画 - 激光线 */
-        .scan-laser {
+        /* 关键优化：隐藏的输入框
+           使用 inputmode="none" 试图在移动端阻止软键盘弹出
+        */
+        #scanner-input {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 2px;
-            background: rgba(255, 0, 0, 0.8);
-            box-shadow: 0 0 4px red;
-            animation: scan 2s infinite linear;
-            z-index: 20;
+            opacity: 0;
+            top: -1000px;
+            pointer-events: none;
         }
-        @keyframes scan {
-            0% { top: 10%; opacity: 0; }
-            10% { opacity: 1; }
-            90% { opacity: 1; }
-            100% { top: 90%; opacity: 0; }
+
+        /* 摄像头区域 */
+        #reader { width: 100%; height: 100%; background: #000; overflow: hidden;}
+        #reader video { object-fit: cover; width: 100%; height: 100%; }
+        #reader__dashboard_section_csr span, #reader__dashboard_section_swaplink { display: none !important; }
+
+        /* 全屏反馈动画 */
+        @keyframes flash-green {
+            0% { background-color: #22c55e; }
+            100% { background-color: #f3f4f6; }
         }
-        
-        /* 变焦滑块样式 */
-        input[type=range] {
-            -webkit-appearance: none;
-            width: 100%;
-            background: transparent;
+        @keyframes flash-red {
+            0% { background-color: #ef4444; }
+            100% { background-color: #f3f4f6; }
         }
-        input[type=range]::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            height: 24px;
-            width: 24px;
-            border-radius: 50%;
-            background: #ffffff;
-            cursor: pointer;
-            margin-top: -10px;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.4);
-        }
-        input[type=range]::-webkit-slider-runnable-track {
-            width: 100%;
-            height: 4px;
-            cursor: pointer;
-            background: rgba(255,255,255,0.3);
-            border-radius: 2px;
-        }
+        .bg-flash-success { animation: flash-green 0.8s ease-out; }
+        .bg-flash-error { animation: flash-red 0.8s ease-out; }
+
+        /* 大字体显示区 */
+        .big-code { font-family: monospace; letter-spacing: 1px; }
     </style>
 </head>
-<body class="bg-gray-100 h-screen flex flex-col overflow-hidden">
+<body id="main-body" class="h-screen flex flex-col bg-gray-100 transition-colors duration-200">
 
-    <!-- 顶部导航 -->
-    <div class="bg-blue-700 text-white p-3 shadow-lg flex justify-between items-center z-50 shrink-0">
-        <h1 class="text-base font-bold tracking-wide">条码配对 Pro Max</h1>
-        <button onclick="toggleSettings()" class="bg-blue-800 px-3 py-1.5 rounded text-xs font-medium border border-blue-500 active:bg-blue-900">
-            📊 数据管理
-        </button>
-    </div>
-
-    <!-- 状态指示栏 (悬浮在扫描器上方) -->
-    <div id="status-bar" class="z-40 bg-white p-3 shadow-md border-b-2 border-gray-200">
-        <div class="flex justify-between items-center">
-            <div id="status-content" class="flex-1">
-                <p class="text-xs text-gray-500 font-medium">当前状态</p>
-                <h2 id="status-text" class="text-xl font-black text-gray-800 tracking-tight mt-0.5">请扫描第一个码</h2>
-            </div>
-            <!-- 清除按钮 (仅在需要时显示) -->
-            <button id="reset-btn" onclick="resetScan()" class="hidden bg-red-50 text-red-600 border border-red-200 px-4 py-2 rounded-lg font-bold text-sm active:scale-95 transition-transform">
-                重置/清除
+    <!-- 顶部状态栏 -->
+    <div class="bg-white p-2 shadow-sm flex justify-between items-center shrink-0 z-50">
+        <div>
+            <h1 class="text-sm font-bold text-gray-800">仓库配对终端 V4</h1>
+            <span id="mode-badge" class="text-[10px] bg-blue-100 text-blue-800 px-1 rounded">手机模式</span>
+        </div>
+        <div class="flex gap-2">
+            <button onclick="toggleMode()" id="mode-btn" class="bg-gray-200 text-gray-700 px-3 py-1 rounded text-xs font-bold whitespace-nowrap">
+                切换到 PDA/枪模式
+            </button>
+            <button onclick="toggleSettings()" class="bg-blue-600 text-white px-3 py-1 rounded text-xs font-bold whitespace-nowrap">
+                导入数据
             </button>
         </div>
-        
-        <!-- 动态结果展示区 -->
-        <div id="preview-box" class="hidden mt-2 pt-2 border-t border-gray-100">
-             <div class="flex items-center gap-2 text-sm">
-                <span class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-xs font-mono">CODE 1</span>
-                <span id="first-code-val" class="font-mono font-bold text-gray-700 truncate">...</span>
-             </div>
-        </div>
     </div>
 
-    <!-- 核心扫描区 (占据剩余全部空间) -->
-    <div class="flex-1 relative bg-black overflow-hidden group">
-        <div id="reader" class="w-full h-full absolute inset-0"></div>
+    <!-- 核心工作区 -->
+    <div class="flex-1 relative flex flex-col overflow-hidden">
         
-        <!-- 视觉辅助层: 既然我们要扫描长条码，给一个宽大的取景框 -->
-        <div id="scan-overlay" class="absolute inset-0 pointer-events-none hidden z-10 flex flex-col items-center justify-center">
-            <!-- 遮罩 -->
-            <div class="absolute inset-0 border-[40px] border-black/50 transition-all duration-300 box-border"></div>
-            
-            <!-- 扫描框线 -->
-            <div class="relative w-[85%] h-[40%] border-2 border-white/70 rounded-lg shadow-[0_0_0_9999px_rgba(0,0,0,0.4)]">
-                <!-- 四角装饰 -->
-                <div class="absolute top-0 left-0 w-6 h-6 border-t-4 border-l-4 border-blue-500 -mt-1 -ml-1 rounded-tl-sm"></div>
-                <div class="absolute top-0 right-0 w-6 h-6 border-t-4 border-r-4 border-blue-500 -mt-1 -mr-1 rounded-tr-sm"></div>
-                <div class="absolute bottom-0 left-0 w-6 h-6 border-b-4 border-l-4 border-blue-500 -mb-1 -ml-1 rounded-bl-sm"></div>
-                <div class="absolute bottom-0 right-0 w-6 h-6 border-b-4 border-r-4 border-blue-500 -mb-1 -mr-1 rounded-br-sm"></div>
-                
-                <!-- 激光扫描动画 -->
-                <div class="scan-laser"></div>
+        <!-- === 场景1: 手机摄像头 (备用) === -->
+        <div id="camera-layer" class="flex-1 relative bg-black">
+            <div id="reader"></div>
+            <!-- 视觉辅助 -->
+            <div class="absolute inset-0 pointer-events-none flex items-center justify-center">
+                <div class="w-[85%] h-[40%] border-2 border-red-500/60 rounded-lg flex items-center justify-center">
+                    <div class="w-full h-0.5 bg-red-500/40"></div>
+                </div>
             </div>
-            
-            <p class="absolute bottom-20 text-white/90 text-sm font-medium bg-black/60 px-3 py-1 rounded-full backdrop-blur-sm">
-                💡 扫不出？试着拉动下方滑块放大
-            </p>
-
-            <!-- 变焦滑块 (Zoom Slider) -->
-            <div id="zoom-control" class="absolute bottom-6 left-8 right-8 pointer-events-auto flex items-center gap-3 opacity-0 transition-opacity duration-500">
-                <span class="text-white text-xs font-bold">1x</span>
-                <input type="range" id="zoom-slider" min="1" max="5" step="0.1" value="1" class="flex-1">
-                <span class="text-white text-xs font-bold">Max</span>
+            <!-- 强制变焦滑块 -->
+            <div class="absolute bottom-4 left-4 right-4 flex items-center gap-2 z-30">
+                <span class="text-white text-xs font-bold">Zoom</span>
+                <input type="range" min="1" max="3" step="0.1" value="1" class="flex-1 h-8" oninput="applyCssZoom(this.value)">
             </div>
         </div>
 
-        <!-- 启动按钮层 -->
-        <div id="camera-starter" class="absolute inset-0 flex flex-col items-center justify-center bg-zinc-900 z-30">
-            <div class="w-20 h-20 bg-blue-600 rounded-full flex items-center justify-center mb-6 shadow-blue-500/50 shadow-xl animate-pulse">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
+        <!-- === 场景2: PDA/扫描枪 (主力) === -->
+        <div id="gun-layer" class="hidden absolute inset-0 bg-gray-100 flex flex-col p-2 z-20">
+            <!-- 状态面板 -->
+            <div class="bg-white rounded-xl shadow-sm p-4 mb-3 text-center border border-gray-200 flex flex-col justify-center min-h-[120px]">
+                <p class="text-xs text-gray-400 font-bold uppercase mb-1">当前任务</p>
+                <h2 id="gun-status" class="text-3xl font-black text-gray-800 leading-tight">请扫码 A</h2>
             </div>
-            <button onclick="startScanning()" class="bg-white text-blue-900 px-8 py-3 rounded-xl font-bold text-lg shadow-lg active:scale-95 transition-all">
-                开启极速扫描
-            </button>
-            <p class="mt-4 text-gray-500 text-xs max-w-[200px] text-center">建议保持光线充足，使用变焦功能辅助扫描</p>
-        </div>
-        
-        <!-- 结果弹窗 (居中显示) -->
-        <div id="result-toast" class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 hidden z-50 flex-col items-center justify-center pointer-events-none w-full px-4">
-             <div id="result-content" class="bg-gray-800 text-white px-6 py-4 rounded-xl shadow-2xl flex flex-col items-center min-w-[200px] text-center backdrop-blur-md bg-opacity-90">
-                <span id="result-icon" class="text-4xl mb-2">✅</span>
-                <span id="result-msg" class="font-bold text-lg">操作成功</span>
-             </div>
-        </div>
-    </div>
 
-    <!-- 设置弹窗 -->
-    <div id="settings-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-[60] hidden flex items-center justify-center p-4">
-        <div class="bg-white w-full max-w-sm rounded-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
-            <div class="p-4 border-b bg-gray-50 flex justify-between items-center">
-                <h3 class="font-bold text-gray-800">数据库管理</h3>
-                <button onclick="toggleSettings()" class="text-gray-400 hover:text-gray-600 p-1">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                </button>
-            </div>
-            
-            <div class="p-5 flex-1 overflow-y-auto">
-                <div class="space-y-4">
-                    <!-- 文件导入 -->
-                    <div class="border-2 border-dashed border-blue-200 rounded-xl p-4 bg-blue-50/50 hover:bg-blue-50 transition-colors text-center cursor-pointer relative">
-                        <input type="file" id="csv-file" accept=".csv,.txt" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" onchange="handleFileUpload(event)"/>
-                        <div class="text-blue-600 mb-1">
-                            <svg class="w-8 h-8 mx-auto mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
-                            <span class="font-bold text-sm">点击选择 CSV 文件</span>
-                        </div>
-                        <p class="text-xs text-gray-500">支持 CSV, TXT (逗号或Tab分隔)</p>
-                    </div>
-
-                    <!-- 文本预览/编辑 -->
-                    <div>
-                        <label class="block text-xs font-bold text-gray-500 mb-1.5 uppercase tracking-wider">数据预览</label>
-                        <textarea id="data-input" class="w-full h-32 border border-gray-300 rounded-lg p-3 text-xs font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" placeholder="A001,B001&#10;A002,B002"></textarea>
-                    </div>
+            <!-- 数据显示区 (大号字体) -->
+            <div class="flex-1 flex flex-col gap-2">
+                <!-- 条码 A 显示 -->
+                <div id="box-a" class="bg-white rounded-lg p-3 border-l-4 border-gray-300 shadow-sm flex-1 flex flex-col justify-center relative opacity-50">
+                    <span class="text-xs text-gray-400 absolute top-2 left-2 font-bold">条码 A</span>
+                    <span id="text-a" class="text-xl font-bold text-gray-800 text-center big-code break-all">---</span>
+                </div>
+                <!-- 条码 B 显示 -->
+                <div id="box-b" class="bg-white rounded-lg p-3 border-l-4 border-gray-300 shadow-sm flex-1 flex flex-col justify-center relative opacity-50">
+                    <span class="text-xs text-gray-400 absolute top-2 left-2 font-bold">条码 B</span>
+                    <span id="text-b" class="text-xl font-bold text-gray-800 text-center big-code break-all">---</span>
                 </div>
             </div>
 
-            <div class="p-4 border-t bg-gray-50 grid grid-cols-2 gap-3">
-                <button onclick="clearData()" class="py-2.5 px-4 bg-white border border-gray-300 text-gray-700 rounded-lg font-bold text-sm hover:bg-gray-50">清空</button>
-                <button onclick="saveData()" class="py-2.5 px-4 bg-blue-600 text-white rounded-lg font-bold text-sm shadow-md hover:bg-blue-700 active:translate-y-0.5">保存生效</button>
+            <!-- 提示文字 -->
+            <div class="text-center mt-3 mb-1">
+                <p class="text-[10px] text-gray-400">PDA请开启“键盘输出”模式并以回车结尾</p>
             </div>
-            <div class="bg-gray-100 py-1.5 text-center">
-                 <p id="data-count" class="text-[10px] text-gray-500 font-mono">当前数据: 0 组</p>
+            
+            <!-- 隐形输入框 (核心) -->
+            <!-- inputmode="none" 防止软键盘弹出，但仍能接收物理扫描枪输入 -->
+            <input type="text" id="scanner-input" autocomplete="off" inputmode="none">
+        </div>
+
+        <!-- 结果全屏遮罩/Toast -->
+        <div id="result-overlay" class="absolute inset-0 z-50 hidden flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm pointer-events-none">
+            <div id="result-box" class="bg-white p-8 rounded-2xl shadow-2xl text-center transform scale-110">
+                <div id="result-icon" class="text-6xl mb-2">✅</div>
+                <div id="result-msg" class="text-2xl font-black">OK</div>
             </div>
+        </div>
+    </div>
+
+    <!-- 底部重置 -->
+    <div class="bg-white p-2 border-t shrink-0">
+        <button onclick="resetProcess()" class="w-full bg-gray-100 text-gray-500 py-3 rounded-lg font-bold active:bg-gray-200">
+            重置当前配对 (Reset)
+        </button>
+    </div>
+
+    <!-- 设置弹窗 -->
+    <div id="settings-modal" class="fixed inset-0 bg-black/50 z-[60] hidden flex items-center justify-center p-4">
+        <div class="bg-white w-full max-w-sm rounded-xl shadow-2xl p-6 flex flex-col max-h-[85vh]">
+            <h3 class="font-bold text-lg mb-4">导入关联数据 (CSV/TXT文件或粘贴)</h3>
+            
+            <!-- 1. 文件上传区 -->
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-1">方法一：导入 CSV/TXT 文件</label>
+                <!-- 真正的文件输入框，设置为隐藏 -->
+                <input type="file" id="csv-file-input" accept=".csv, .txt" class="hidden" onchange="handleFileUpload(event)">
+                <button onclick="document.getElementById('csv-file-input').click()" 
+                        class="w-full bg-indigo-500 text-white py-2 rounded-lg font-bold text-sm hover:bg-indigo-600 transition duration-150">
+                    选择 CSV/TXT 文件
+                </button>
+                <p id="file-status" class="text-xs text-gray-500 mt-1">未选择文件。请选择包含两列数据的文件。</p>
+            </div>
+
+            <!-- 2. 分隔线 -->
+            <div class="relative flex items-center mb-4">
+                <div class="flex-grow border-t border-gray-300"></div>
+                <span class="flex-shrink mx-4 text-xs text-gray-500">或</span>
+                <div class="flex-grow border-t border-gray-300"></div>
+            </div>
+
+            <!-- 3. 粘贴/手动输入区 (Fallback) -->
+            <label class="block text-sm font-medium text-gray-700 mb-1">方法二：直接粘贴或手动输入 (兼容 Excel 粘贴)</label>
+            <textarea id="data-input" class="flex-1 border p-2 text-xs font-mono rounded bg-gray-50 h-32 mb-4" 
+                placeholder="如果方法一失败，请将CSV文件内容或Excel表格（两列）直接复制并粘贴到此处。&#10;支持逗号(,)或制表符(Tab)分割。&#10;&#10;示例：&#10;A001,B001&#10;A002,B002">
+            </textarea>
+            
+            <div class="flex gap-2 shrink-0">
+                <button onclick="loadDemoData()" class="px-3 py-2 bg-gray-200 rounded text-xs font-bold">测试数据</button>
+                <button onclick="saveData()" class="flex-1 bg-blue-600 text-white rounded font-bold">保存并生效 (云端)</button>
+                <button onclick="toggleSettings()" class="px-3 text-gray-500">关闭</button>
+            </div>
+            <p id="data-count" class="text-center text-xs text-gray-400 mt-2">已加载: 0 组</p>
         </div>
     </div>
 
     <script>
+        // === 全局变量 (非模块部分需要重新定义，指向 window 上的对象) ===
         let pairDatabase = [];
-        let firstScannedCode = null;
+        let scanState = 'idle'; // idle (等待A) | pending (等待B)
+        let firstCode = null;
+        let isGunMode = false;
         let html5QrCode = null;
-        let audioContext = null;
-        let isProcessing = false;
-        let lastScannedCode = ""; 
-        let videoTrack = null;
-        let capabilities = {};
+        let audioCtx = null;
+        // 新增：用于存储文件读取的内容和状态
+        let fileContentToSave = null; 
+        let selectedFileName = null; 
 
-        window.onload = loadDataFromStorage;
+        // Firebase 实例现在通过 window 访问
+        let db = window.db;
+        let auth = window.auth;
+        let isAuthReady = window.isAuthReady;
+        let userId = window.userId;
+        const PUBLIC_DOC_PATH = window.PUBLIC_DOC_PATH;
 
-        // --- 音频引擎 ---
-        function initAudio() {
-            if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            if (audioContext.state === 'suspended') audioContext.resume();
-        }
-        
-        function beep(type) {
-            if (!audioContext) initAudio();
-            const osc = audioContext.createOscillator();
-            const gain = audioContext.createGain();
-            osc.connect(gain);
-            gain.connect(audioContext.destination);
-            const now = audioContext.currentTime;
-            
-            if (type === 'scan') {
-                osc.type = 'sine';
-                osc.frequency.setValueAtTime(1200, now);
-                gain.gain.setValueAtTime(0.1, now);
-                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
-                osc.start(now); osc.stop(now + 0.1);
-            } else if (type === 'success') {
-                osc.type = 'sine';
-                osc.frequency.setValueAtTime(800, now);
-                osc.frequency.setValueAtTime(1200, now + 0.1);
-                gain.gain.setValueAtTime(0.3, now);
-                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
-                osc.start(now); osc.stop(now + 0.4);
-            } else if (type === 'error') {
-                osc.type = 'sawtooth';
-                osc.frequency.setValueAtTime(150, now);
-                osc.frequency.linearRampToValueAtTime(100, now + 0.3);
-                gain.gain.setValueAtTime(0.5, now);
-                gain.gain.linearRampToValueAtTime(0.001, now + 0.5);
-                osc.start(now); osc.stop(now + 0.5);
-            }
-        }
-
-        // --- 条码清洗 ---
-        function cleanBarcode(code) {
-            if (!code) return '';
-            return code.toUpperCase().replace(/[^A-Z0-9\-\s]/g, '').trim();
-        }
-
-        // --- 核心扫描逻辑 ---
-        async function startScanning() {
-            initAudio();
-            if(pairDatabase.length === 0) { alert("请先在右上角导入数据！"); toggleSettings(); return; }
-
-            document.getElementById('camera-starter').classList.add('hidden');
-            document.getElementById('scan-overlay').classList.remove('hidden');
-            
+        // === Firebase 初始化与认证 ===
+        async function initFirebase() {
             try {
-                html5QrCode = new Html5Qrcode("reader");
+                const app = window.initializeApp(window.firebaseConfig);
+                window.db = window.getFirestore(app);
+                window.auth = window.getAuth(app);
+                db = window.db;
+                auth = window.auth;
                 
-                // 1. 暴力高分辨率配置
-                // 尝试强制使用高清分辨率，这对于识别细密的条形码至关重要
-                const config = {
-                    fps: 30, 
-                    qrbox: function(viewfinderWidth, viewfinderHeight) {
-                         // 使用更宽的扫描框
-                        return { width: Math.floor(viewfinderWidth * 0.9), height: Math.floor(viewfinderHeight * 0.5) };
-                    },
-                    aspectRatio: 1.0,
-                    videoConstraints: {
-                        facingMode: "environment",
-                        // 强制请求高分辨率
-                        width: { min: 1280, ideal: 1920, max: 2560 },
-                        height: { min: 720, ideal: 1080, max: 1440 },
-                        // 尝试请求连续对焦模式 (在某些安卓/Chrome上有效)
-                        advanced: [{ focusMode: "continuous" }]
-                    },
-                    formatsToSupport: [ 
-                        Html5QrcodeSupportedFormats.CODE_128,
-                        Html5QrcodeSupportedFormats.CODE_39,
-                        Html5QrcodeSupportedFormats.EAN_13,
-                        Html5QrcodeSupportedFormats.UPC_A
-                    ],
-                    experimentalFeatures: {
-                        useBarCodeDetectorIfSupported: true 
+                // 监听认证状态变化
+                window.onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        window.userId = user.uid;
+                        window.isAuthReady = true;
+                        isAuthReady = true;
+                        console.log(`Firebase Auth Ready. User ID: ${user.uid}`);
+                        // 认证完成后，加载数据并开始监听云端变化
+                        loadData();
+                    } else {
+                        // 如果没有使用定制 Token 登录，则尝试匿名登录
+                        window.signInAnonymously(auth).catch(e => console.error("Anonymous Sign-in failed:", e));
                     }
-                };
-
-                await html5QrCode.start(
-                    { facingMode: "environment" }, 
-                    config, 
-                    (decodedText) => {
-                        const now = Date.now();
-                        const rawCode = decodedText.trim();
-                        if (rawCode === lastScannedCode && (now - isProcessing) < 1500) return;
-                        isProcessing = now;
-                        lastScannedCode = rawCode;
-                        handleScan(rawCode);
-                    }
-                );
-
-                // 2. 启用变焦功能 (Zoom)
-                // 启动后获取摄像头能力，如果支持变焦，则显示滑块
-                setTimeout(enableZoomControl, 500);
-
-            } catch (err) {
-                alert("无法启动相机：" + err + "\n请尝试使用Safari浏览器并赋予相机权限。");
-                location.reload();
-            }
-        }
-
-        // --- 变焦控制逻辑 ---
-        function enableZoomControl() {
-            // 获取正在运行的视频轨道
-            if(html5QrCode && html5QrCode.getRunningTrackCapabilities) {
-                 // 官方API可能不直接暴露track，我们需要一些hack或者使用 HTML5 Video 元素的特性
-                 // 幸运的是 html5-qrcode 实例内部有 track 引用，但最好的方式是通过标准API重新获取
-                 const videoElement = document.querySelector("#reader video");
-                 if(videoElement && videoElement.srcObject) {
-                     const track = videoElement.srcObject.getVideoTracks()[0];
-                     if(track) {
-                         videoTrack = track;
-                         capabilities = track.getCapabilities();
-                         
-                         // 检查是否支持 zoom
-                         if(capabilities.zoom) {
-                             const zoomControl = document.getElementById('zoom-control');
-                             const slider = document.getElementById('zoom-slider');
-                             
-                             // 设置滑块范围
-                             slider.min = capabilities.zoom.min;
-                             slider.max = capabilities.zoom.max;
-                             slider.step = capabilities.zoom.step;
-                             slider.value = track.getSettings().zoom || 1;
-                             
-                             // 显示控件
-                             zoomControl.classList.remove('opacity-0');
-                             
-                             // 绑定事件
-                             slider.oninput = function() {
-                                 track.applyConstraints({
-                                     advanced: [{ zoom: parseFloat(this.value) }]
-                                 });
-                             };
-                         }
-                     }
-                 }
-            }
-        }
-
-        function handleScan(rawCode) {
-            const code = cleanBarcode(rawCode); 
-
-            if (!firstScannedCode) {
-                firstScannedCode = code;
-                beep('scan');
-                renderUI('pending', code);
-                showToast(`已录入: ${code}`, 'info');
-            } else {
-                if (code === firstScannedCode) {
-                    showToast("重复扫描！请扫另一个", 'warn');
-                    return;
-                }
-                
-                const isMatch = pairDatabase.some(pair => {
-                    const cleanedPairA = cleanBarcode(pair.a);
-                    const cleanedPairB = cleanBarcode(pair.b);
-                    return (cleanedPairA === firstScannedCode && cleanedPairB === code) || 
-                           (cleanedPairB === firstScannedCode && cleanedPairA === code);
                 });
 
-                if (isMatch) {
-                    beep('success');
-                    showToast("✅ 配对正确", 'success');
-                    setTimeout(() => resetScan(), 1200);
-                } else {
-                    beep('error');
-                    showToast("❌ 错误！无关联", 'error');
+                // 尝试使用 Canvas 提供的定制 Token 登录
+                if (window.initialAuthToken) {
+                    await window.signInWithCustomToken(auth, window.initialAuthToken);
                 }
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
             }
         }
 
-        function resetScan() {
-            firstScannedCode = null;
-            lastScannedCode = ""; 
-            renderUI('idle');
+        // === 初始化 ===
+        window.onload = () => {
+            initFirebase(); // 启动 Firebase
+            startCamera(); // 默认开启手机模式
+            
+            // 全局点击监听：在枪模式下，任何点击都强制聚焦回输入框
+            document.addEventListener('click', () => {
+                if(isGunMode) focusInput();
+            });
+
+            // 监听隐形输入框
+            const inputEl = document.getElementById('scanner-input');
+            
+            // 兼容大部分PDA：它们通常模拟键盘输入并在最后发送 'Enter'
+            inputEl.addEventListener('keydown', (e) => {
+                if(e.key === 'Enter') {
+                    const val = inputEl.value.trim();
+                    if(val) handleScan(val);
+                    inputEl.value = ''; // 清空
+                }
+            });
+        };
+
+        // 强制聚焦输入框
+        function focusInput() {
+            const el = document.getElementById('scanner-input');
+            if(el) {
+                el.focus(); 
+            }
         }
 
-        // --- UI 渲染 ---
-        function renderUI(state, data) {
-            const statusText = document.getElementById('status-text');
-            const resetBtn = document.getElementById('reset-btn');
-            const previewBox = document.getElementById('preview-box');
-            const codeVal = document.getElementById('first-code-val');
-            const statusBar = document.getElementById('status-bar');
+        // === 模式切换 ===
+        function toggleMode() {
+            isGunMode = !isGunMode;
+            const btn = document.getElementById('mode-btn');
+            const badge = document.getElementById('mode-badge');
+            const layerCamera = document.getElementById('camera-layer');
+            const layerGun = document.getElementById('gun-layer');
+            const body = document.getElementById('main-body');
+
+            if (isGunMode) {
+                // 进入 PDA/枪模式
+                if(html5QrCode) html5QrCode.stop().catch(()=>{});
+                layerCamera.classList.add('hidden');
+                layerGun.classList.remove('hidden');
+                btn.innerText = "切换回手机模式";
+                btn.classList.replace('bg-gray-200', 'bg-blue-100');
+                badge.innerText = "PDA/枪模式 (云同步)";
+                badge.className = "text-[10px] bg-purple-100 text-purple-800 px-1 rounded";
+                
+                // 立即聚焦
+                setTimeout(focusInput, 100);
+                resetProcess();
+            } else {
+                // 回到手机模式
+                layerCamera.classList.remove('hidden');
+                layerGun.classList.add('hidden');
+                btn.innerText = "切换到 PDA/枪模式";
+                btn.classList.replace('bg-blue-100', 'bg-gray-200');
+                badge.innerText = "手机模式 (云同步)";
+                badge.className = "text-[10px] bg-blue-100 text-blue-800 px-1 rounded";
+                body.className = "h-screen flex flex-col bg-gray-100 transition-colors duration-200"; // 重置背景
+                startCamera();
+            }
+        }
+
+        // === 核心逻辑 ===
+        function handleScan(rawCode) {
+            // 清理并标准化条码 (去除特殊字符，转大写)
+            const code = rawCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
+            if(!code) return;
+
+            if (scanState === 'idle') {
+                // 阶段1：扫第一个码
+                firstCode = code;
+                scanState = 'pending';
+                playSound('scan');
+                renderGunUI('pending', code);
+            } else {
+                // 阶段2：扫第二个码
+                if (code === firstCode) {
+                    showResultOverlay('重复扫描', 'warn');
+                    return;
+                }
+                checkPair(firstCode, code);
+            }
+        }
+
+        function checkPair(a, b) {
+            // 在云端同步的 pairDatabase 中查找
+            const found = pairDatabase.some(p => {
+                // 同样清理数据库中的码，确保匹配逻辑严谨
+                const pa = p.a.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                const pb = p.b.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                // 允许 A-B 或 B-A 两种顺序匹配
+                return (pa === a && pb === b) || (pa === b && pb === a);
+            });
+
+            if (found) {
+                playSound('success');
+                showResultOverlay('配对成功 OK', 'success');
+                flashScreen('success');
+                setTimeout(resetProcess, 1200);
+            } else {
+                playSound('error');
+                showResultOverlay('错误 ERROR', 'error');
+                flashScreen('error');
+            }
+        }
+
+        function resetProcess() {
+            firstCode = null;
+            scanState = 'idle';
+            if(isGunMode) {
+                document.getElementById('scanner-input').value = '';
+                renderGunUI('idle');
+            }
+        }
+
+        // === UI 渲染 (PDA模式专用) ===
+        function renderGunUI(state, code) {
+            const status = document.getElementById('gun-status');
+            const boxA = document.getElementById('box-a');
+            const textA = document.getElementById('text-a');
+            const boxB = document.getElementById('box-b');
+            const textB = document.getElementById('text-b');
 
             if (state === 'idle') {
-                statusText.innerText = "请扫描第一个码";
-                statusText.className = "text-xl font-black text-gray-800 tracking-tight mt-0.5";
-                statusBar.className = "z-40 bg-white p-3 shadow-md border-b-2 border-gray-200 transition-colors";
-                resetBtn.classList.add('hidden');
-                previewBox.classList.add('hidden');
+                status.innerText = "请扫描条码 A";
+                status.className = "text-3xl font-black text-gray-800 leading-tight";
+                
+                boxA.className = "bg-white rounded-lg p-3 border-l-4 border-gray-300 shadow-sm flex-1 flex flex-col justify-center relative opacity-50";
+                textA.innerText = "---";
+                
+                boxB.className = "bg-white rounded-lg p-3 border-l-4 border-gray-300 shadow-sm flex-1 flex flex-col justify-center relative opacity-50";
+                textB.innerText = "---";
             } else if (state === 'pending') {
-                statusText.innerText = "扫描第二个码...";
-                statusText.className = "text-xl font-black text-blue-600 tracking-tight mt-0.5 animate-pulse";
-                statusBar.className = "z-40 bg-blue-50 p-3 shadow-md border-b-2 border-blue-200 transition-colors";
-                resetBtn.classList.remove('hidden');
-                previewBox.classList.remove('hidden');
-                codeVal.innerText = data;
+                status.innerText = "请扫描条码 B";
+                status.className = "text-3xl font-black text-blue-600 leading-tight animate-pulse";
+                
+                boxA.className = "bg-blue-50 rounded-lg p-3 border-l-4 border-blue-500 shadow-md flex-1 flex flex-col justify-center relative";
+                textA.innerText = code;
+                
+                boxB.className = "bg-white rounded-lg p-3 border-l-4 border-gray-300 shadow-sm flex-1 flex flex-col justify-center relative opacity-100";
+                textB.innerText = "等待扫描...";
             }
         }
 
-        function showToast(msg, type) {
-            const toast = document.getElementById('result-toast');
-            const content = document.getElementById('result-content');
+        function showResultOverlay(msg, type) {
+            const overlay = document.getElementById('result-overlay');
+            const box = document.getElementById('result-box');
             const icon = document.getElementById('result-icon');
             const txt = document.getElementById('result-msg');
-            
-            toast.classList.remove('hidden', 'flex');
-            toast.classList.add('flex');
-            
+
+            overlay.classList.remove('hidden');
             txt.innerText = msg;
-            
-            if(type === 'success') {
+
+            if (type === 'success') {
+                box.className = "bg-green-500 text-white p-8 rounded-2xl shadow-2xl text-center transform scale-110";
                 icon.innerText = "✅";
-                content.className = "bg-green-600 text-white px-8 py-6 rounded-2xl shadow-2xl flex flex-col items-center min-w-[200px] text-center transform scale-110";
             } else if (type === 'error') {
+                box.className = "bg-red-600 text-white p-8 rounded-2xl shadow-2xl text-center transform scale-110";
                 icon.innerText = "❌";
-                content.className = "bg-red-600 text-white px-8 py-6 rounded-2xl shadow-2xl flex flex-col items-center min-w-[200px] text-center animate-bounce";
+            } else if (type === 'info') { // 用于显示云同步状态
+                box.className = "bg-gray-800 text-white p-8 rounded-2xl shadow-2xl text-center transform scale-110";
+                icon.innerText = "☁️";
             } else {
-                icon.innerText = "ℹ️";
-                content.className = "bg-gray-800/90 text-white px-6 py-4 rounded-xl shadow-xl flex flex-col items-center min-w-[150px] text-center";
+                box.className = "bg-orange-500 text-white p-8 rounded-2xl shadow-2xl text-center";
+                icon.innerText = "⚠️";
             }
 
-            if (window.toastTimer) clearTimeout(window.toastTimer);
-            window.toastTimer = setTimeout(() => {
-                toast.classList.add('hidden');
-            }, type === 'error' ? 2500 : 1500);
+            // 错误提示保留更长时间
+            setTimeout(() => overlay.classList.add('hidden'), type === 'error' ? 2000 : 800);
         }
 
-        // --- 数据功能 ---
-        function toggleSettings() {
-            const m = document.getElementById('settings-modal');
-            m.classList.toggle('hidden');
-            if(!m.classList.contains('hidden')) {
-                const raw = localStorage.getItem('raw_pair_data');
-                if(raw && !document.getElementById('data-input').value) {
-                    document.getElementById('data-input').value = raw;
-                }
+        function flashScreen(type) {
+            const body = document.getElementById('main-body');
+            body.className = `h-screen flex flex-col transition-colors duration-200 ${type === 'success' ? 'bg-green-100' : 'bg-red-100'}`;
+            setTimeout(() => {
+                body.className = "h-screen flex flex-col bg-gray-100 transition-colors duration-200";
+            }, 800);
+        }
+
+        // === 摄像头功能 (与之前相同) ===
+        function startCamera() {
+            if(isGunMode) return;
+            html5QrCode = new Html5Qrcode("reader");
+            const config = {
+                fps: 30, 
+                qrbox: { width: 300, height: 150 },
+                aspectRatio: 1.0,
+                formatsToSupport: [ Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39, Html5QrcodeSupportedFormats.EAN_13 ]
+            };
+            html5QrCode.start({ facingMode: "environment" }, config, (text) => {
+                if(window.scanLock) return;
+                window.scanLock = true;
+                setTimeout(()=> window.scanLock=false, 1000);
+                handleScan(text);
+            }).catch(()=>{});
+        }
+        function applyCssZoom(val) {
+            const v = document.querySelector('#reader video');
+            if(v) v.style.transform = `scale(${val})`;
+        }
+
+        // === 音频功能 (与之前相同) ===
+        function playSound(type) {
+            if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if(audioCtx.state === 'suspended') audioCtx.resume();
+            const o = audioCtx.createOscillator();
+            const g = audioCtx.createGain();
+            o.connect(g); g.connect(audioCtx.destination);
+            const t = audioCtx.currentTime;
+            
+            if(type==='success') {
+                o.frequency.setValueAtTime(880, t);
+                o.frequency.setValueAtTime(1760, t+0.1);
+                g.gain.setValueAtTime(0.5, t); g.gain.linearRampToValueAtTime(0, t+0.3);
+                o.start(t); o.stop(t+0.3);
+            } else if(type==='error') {
+                o.type='sawtooth'; o.frequency.setValueAtTime(150, t);
+                g.gain.setValueAtTime(0.8, t); g.gain.linearRampToValueAtTime(0, t+0.6);
+                o.start(t); o.stop(t+0.6);
+            } else {
+                o.frequency.setValueAtTime(1200, t);
+                g.gain.setValueAtTime(0.2, t); g.gain.exponentialRampToValueAtTime(0.01, t+0.1);
+                o.start(t); o.stop(t+0.1);
             }
         }
 
-        function handleFileUpload(e) {
-            const f = e.target.files[0];
-            if(!f) return;
-            const r = new FileReader();
-            r.onload = (ev) => { document.getElementById('data-input').value = ev.target.result; };
-            r.readAsText(f);
+        // === 数据操作 (已改为 Firestore 云同步) ===
+        function toggleSettings() { 
+            document.getElementById('settings-modal').classList.toggle('hidden'); 
+            // Reset file status when modal opens/closes
+            if(document.getElementById('settings-modal').classList.contains('hidden')) {
+                fileContentToSave = null;
+                selectedFileName = null;
+                // 清除文件输入框的内容
+                document.getElementById('csv-file-input').value = ''; 
+                document.getElementById('file-status').innerText = '未选择文件。请选择包含两列数据的文件。';
+            }
         }
 
-        function saveData() {
-            const val = document.getElementById('data-input').value.trim();
-            if(!val) return alert("空数据");
+        // 新增文件处理函数
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) {
+                fileContentToSave = null;
+                selectedFileName = null;
+                document.getElementById('file-status').innerText = '未选择文件。请选择包含两列数据的文件。';
+                return;
+            }
+
+            selectedFileName = file.name;
+            const reader = new FileReader();
             
-            const lines = val.split(/\r?\n/);
-            const db = [];
-            lines.forEach(l => {
-                const p = l.split(/,|\t|;/).map(x=>x.trim()).filter(x=>x);
-                if(p.length >= 2) db.push({a:p[0], b:p[1]});
-            });
-            
-            if(db.length===0) return alert("格式错误，每行需要两个数据");
-            
-            pairDatabase = db;
-            localStorage.setItem('barcode_pairs', JSON.stringify(db));
-            localStorage.setItem('raw_pair_data', val);
-            document.getElementById('data-count').innerText = `当前数据: ${db.length} 组`;
-            toggleSettings();
-            showToast(`成功导入 ${db.length} 组`, 'success');
+            reader.onload = (e) => {
+                fileContentToSave = e.target.result;
+                document.getElementById('file-status').innerText = `✅ 文件已加载: ${selectedFileName} (${(file.size / 1024).toFixed(2)} KB)。请点击“保存并生效”。`;
+                // 提示用户内容已准备好，但不要填充到文本框，避免混淆
+                console.log(`File ${selectedFileName} loaded successfully.`);
+            };
+
+            reader.onerror = (e) => {
+                // 如果环境阻止文件读取，我们提供清晰的指引
+                console.error("FileReader failed, falling back to paste method.", e);
+                fileContentToSave = null;
+                document.getElementById('file-status').innerHTML = `
+                    <span class="text-red-500 font-bold">❌ 文件读取失败！</span>
+                    <span class="text-xs text-gray-500">请使用方法二，将文件内容复制粘贴到下方文本框。</span>
+                `;
+            };
+
+            // 尝试读取文件
+            reader.readAsText(file);
         }
         
-        function clearData() {
-            if(!confirm("确认清空？")) return;
-            pairDatabase = [];
-            localStorage.removeItem('barcode_pairs');
-            localStorage.removeItem('raw_pair_data');
-            document.getElementById('data-input').value = "";
-            document.getElementById('data-count').innerText = "当前数据: 0 组";
-        }
+        async function saveData() {
+            if (!isAuthReady || !db) {
+                showResultOverlay("认证未完成，无法保存", 'error');
+                return;
+            }
+            
+            // 优先级：1. 文件内容 (如果已成功读取) 2. 文本框内容
+            const raw = fileContentToSave !== null 
+                        ? fileContentToSave 
+                        : document.getElementById('data-input').value;
+            
+            if (!raw.trim()) {
+                showResultOverlay("导入内容为空", 'warn');
+                return;
+            }
 
-        function loadDataFromStorage() {
-            const s = localStorage.getItem('barcode_pairs');
-            if(s) {
-                pairDatabase = JSON.parse(s);
-                document.getElementById('data-count').innerText = `当前数据: ${pairDatabase.length} 组`;
+            const lines = raw.split('\n');
+            const dbArray = [];
+            lines.forEach(l => {
+                // 兼容逗号(,)或制表符(\t)分割
+                const p = l.split(/,|\t/).map(s=>s.trim()).filter(s=>s);
+                // 仅在找到两列有效数据时才保存
+                if(p.length >= 2) dbArray.push({a:p[0], b:p[1]});
+            });
+
+            if (dbArray.length === 0) {
+                 showResultOverlay("未识别到有效配对数据", 'error');
+                 return;
+            }
+
+            const docRef = window.doc(db, PUBLIC_DOC_PATH);
+            
+            try {
+                // 存储数据数组和原始文本到云端
+                await window.setDoc(docRef, { 
+                    pairs: dbArray,
+                    rawText: raw, // 存储原始文本方便下次编辑/查看
+                    updatedAt: new Date().toISOString()
+                });
+                
+                // 清理状态
+                fileContentToSave = null;
+                selectedFileName = null;
+                document.getElementById('csv-file-input').value = '';
+                
+                // onSnapshot 会自动触发 loadData 逻辑，这里只需提示成功
+                document.getElementById('data-count').innerText = `已加载: ${dbArray.length} 组 (云同步)`;
+                document.getElementById('file-status').innerText = '未选择文件。请选择包含两列数据的文件。'; // Reset status
+                toggleSettings();
+                showResultOverlay(`导入并云同步 ${dbArray.length} 组`, 'success');
+                console.log("Data successfully saved to Firestore.");
+
+            } catch (e) {
+                console.error("Error writing document:", e);
+                showResultOverlay("保存失败 (云端错误)", 'error');
             }
         }
+
+        function loadData() {
+            if (!db || !isAuthReady) return; 
+
+            const docRef = window.doc(db, PUBLIC_DOC_PATH);
+
+            // 实时监听配对数据，任何设备更新都会同步到这里
+            window.onSnapshot(docRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    pairDatabase = data.pairs || []; 
+                    document.getElementById('data-count').innerText = `已加载: ${pairDatabase.length} 组 (云同步)`;
+                    document.getElementById('data-input').value = data.rawText || ''; 
+                    
+                    // 确保在数据加载后，文件输入状态是清空的
+                    fileContentToSave = null;
+                    selectedFileName = null;
+                    document.getElementById('csv-file-input').value = '';
+                    document.getElementById('file-status').innerText = '未选择文件。请选择包含两列数据的文件。';
+
+                    console.log(`Data loaded from Firestore: ${pairDatabase.length} pairs.`);
+                    // 仅在数据更新时显示提示
+                    showResultOverlay(`数据已同步 ${pairDatabase.length} 组`, 'info');
+                } else {
+                    pairDatabase = [];
+                    document.getElementById('data-count').innerText = `已加载: 0 组 (云同步)`;
+                    document.getElementById('data-input').value = '';
+                    console.log("No pairing data found in Firestore.");
+                }
+            }, (error) => {
+                console.error("Error listening to Firestore data:", error);
+                showResultOverlay("同步失败 (网络错误)", 'error');
+            });
+        }
+        
+        function loadDemoData() { document.getElementById('data-input').value = "123456,654321\nABC,DEF\nITEMX,ITEMY"; }
     </script>
 </body>
 </html>
