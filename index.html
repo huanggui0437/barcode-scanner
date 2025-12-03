@@ -5,16 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>仓库配对终端 (云同步版)</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- 引入HTML5-QRCODE 库 -->
+    <!-- HTML5-QRCODE 库 -->
     <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
     
-    <!-- 引入 Firebase 依赖 (用于云同步数据) -->
+    <!-- Firebase 依赖 -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // === 全局 Firebase 变量和配置 (必须在 window 上暴露以便非模块脚本访问) ===
+        // Expose Firebase modules globally
         window.initializeApp = initializeApp;
         window.getAuth = getAuth;
         window.signInAnonymously = signInAnonymously;
@@ -30,9 +30,8 @@
         window.userId = null;
         window.isAuthReady = false;
 
-        // 全局变量已由 Canvas 环境注入
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        // 公共数据路径：所有用户共享一份配对列表
+        // Public path for shared data
         window.PUBLIC_DOC_PATH = `/artifacts/${appId}/public/data/pairs/pairing_list`;
         window.firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
         window.initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
@@ -41,9 +40,6 @@
     <style>
         body { font-family: sans-serif; touch-action: manipulation; background-color: #f3f4f6; overflow: hidden; }
         
-        /* 关键优化：隐藏的输入框
-           使用 inputmode="none" 试图在移动端阻止软键盘弹出
-        */
         #scanner-input {
             position: absolute;
             opacity: 0;
@@ -51,24 +47,15 @@
             pointer-events: none;
         }
 
-        /* 摄像头区域 */
         #reader { width: 100%; height: 100%; background: #000; overflow: hidden;}
         #reader video { object-fit: cover; width: 100%; height: 100%; }
         #reader__dashboard_section_csr span, #reader__dashboard_section_swaplink { display: none !important; }
 
-        /* 全屏反馈动画 */
-        @keyframes flash-green {
-            0% { background-color: #22c55e; }
-            100% { background-color: #f3f4f6; }
-        }
-        @keyframes flash-red {
-            0% { background-color: #ef4444; }
-            100% { background-color: #f3f4f6; }
-        }
+        @keyframes flash-green { 0% { background-color: #22c55e; } 100% { background-color: #f3f4f6; } }
+        @keyframes flash-red { 0% { background-color: #ef4444; } 100% { background-color: #f3f4f6; } }
         .bg-flash-success { animation: flash-green 0.8s ease-out; }
         .bg-flash-error { animation: flash-red 0.8s ease-out; }
 
-        /* 大字体显示区 */
         .big-code { font-family: monospace; letter-spacing: 1px; }
     </style>
 </head>
@@ -77,7 +64,7 @@
     <!-- 顶部状态栏 -->
     <div class="bg-white p-2 shadow-sm flex justify-between items-center shrink-0 z-50">
         <div>
-            <h1 class="text-sm font-bold text-gray-800">仓库配对终端 V4</h1>
+            <h1 class="text-sm font-bold text-gray-800">仓库配对终端 V5 (稳定版)</h1>
             <span id="mode-badge" class="text-[10px] bg-blue-100 text-blue-800 px-1 rounded">手机模式</span>
         </div>
         <div class="flex gap-2">
@@ -114,7 +101,7 @@
             <!-- 状态面板 -->
             <div class="bg-white rounded-xl shadow-sm p-4 mb-3 text-center border border-gray-200 flex flex-col justify-center min-h-[120px]">
                 <p class="text-xs text-gray-400 font-bold uppercase mb-1">当前任务</p>
-                <h2 id="gun-status" class="text-3xl font-black text-gray-800 leading-tight">请扫码 A</h2>
+                <h2 id="gun-status" class="text-3xl font-black text-gray-800 leading-tight">请扫描条码 A</h2>
             </div>
 
             <!-- 数据显示区 (大号字体) -->
@@ -137,7 +124,6 @@
             </div>
             
             <!-- 隐形输入框 (核心) -->
-            <!-- inputmode="none" 防止软键盘弹出，但仍能接收物理扫描枪输入 -->
             <input type="text" id="scanner-input" autocomplete="off" inputmode="none">
         </div>
 
@@ -165,7 +151,7 @@
             <!-- 1. 文件上传区 -->
             <div class="mb-4">
                 <label class="block text-sm font-medium text-gray-700 mb-1">方法一：导入 CSV/TXT 文件</label>
-                <!-- 真正的文件输入框，设置为隐藏 -->
+                <!-- 真正的文件输入框 -->
                 <input type="file" id="csv-file-input" accept=".csv, .txt" class="hidden" onchange="handleFileUpload(event)">
                 <button onclick="document.getElementById('csv-file-input').click()" 
                         class="w-full bg-indigo-500 text-white py-2 rounded-lg font-bold text-sm hover:bg-indigo-600 transition duration-150">
@@ -181,10 +167,10 @@
                 <div class="flex-grow border-t border-gray-300"></div>
             </div>
 
-            <!-- 3. 粘贴/手动输入区 (Fallback) -->
-            <label class="block text-sm font-medium text-gray-700 mb-1">方法二：直接粘贴或手动输入 (兼容 Excel 粘贴)</label>
+            <!-- 3. 粘贴/手动输入区 (数据源) -->
+            <label class="block text-sm font-medium text-gray-700 mb-1">方法二：直接粘贴或手动输入 (数据以该文本框为准)</label>
             <textarea id="data-input" class="flex-1 border p-2 text-xs font-mono rounded bg-gray-50 h-32 mb-4" 
-                placeholder="如果方法一失败，请将CSV文件内容或Excel表格（两列）直接复制并粘贴到此处。&#10;支持逗号(,)或制表符(Tab)分割。&#10;&#10;示例：&#10;A001,B001&#10;A002,B002">
+                placeholder="请将CSV文件内容或Excel表格（两列）直接复制并粘贴到此处。&#10;支持逗号(,)或制表符(Tab)分割。&#10;&#10;示例：&#10;A001,B001&#10;A002,B002">
             </textarea>
             
             <div class="flex gap-2 shrink-0">
@@ -197,21 +183,18 @@
     </div>
 
     <script>
-        // === 全局变量 (非模块部分需要重新定义，指向 window 上的对象) ===
+        // === 全局变量 ===
         let pairDatabase = [];
         let scanState = 'idle'; // idle (等待A) | pending (等待B)
         let firstCode = null;
         let isGunMode = false;
         let html5QrCode = null;
         let audioCtx = null;
-        let fileContentToSave = null; 
-        let selectedFileName = null; 
-
-        // Firebase 实例现在通过 window 访问
+        
+        // Firebase Instances
         let db = window.db;
         let auth = window.auth;
         let isAuthReady = window.isAuthReady;
-        let userId = window.userId;
         const PUBLIC_DOC_PATH = window.PUBLIC_DOC_PATH;
 
         // === Firebase 初始化与认证 ===
@@ -223,22 +206,19 @@
                 db = window.db;
                 auth = window.auth;
                 
-                // 监听认证状态变化
                 window.onAuthStateChanged(auth, async (user) => {
                     if (user) {
                         window.userId = user.uid;
                         window.isAuthReady = true;
                         isAuthReady = true;
                         console.log(`Firebase Auth Ready. User ID: ${user.uid}`);
-                        // 认证完成后，加载数据并开始监听云端变化
-                        loadData();
+                        loadData(); // Load data after successful auth
                     } else {
-                        // 如果没有使用定制 Token 登录，则尝试匿名登录
+                        // Try anonymous sign-in if no custom token provided
                         window.signInAnonymously(auth).catch(e => console.error("Anonymous Sign-in failed:", e));
                     }
                 });
 
-                // 尝试使用 Canvas 提供的定制 Token 登录
                 if (window.initialAuthToken) {
                     await window.signInWithCustomToken(auth, window.initialAuthToken);
                 }
@@ -247,39 +227,35 @@
             }
         }
 
-        // === 初始化 ===
+        // === 初始化事件 ===
         window.onload = () => {
-            initFirebase(); // 启动 Firebase
-            startCamera(); // 默认开启手机模式
+            initFirebase(); 
+            startCamera(); 
             
-            // 全局点击监听：在枪模式下，任何点击都强制聚焦回输入框
-            document.addEventListener('click', () => {
-                if(isGunMode) focusInput();
-            });
+            document.addEventListener('click', () => { if(isGunMode) focusInput(); });
 
-            // 监听隐形输入框
             const inputEl = document.getElementById('scanner-input');
-            
-            // 兼容大部分PDA：它们通常模拟键盘输入并在最后发送 'Enter'
             inputEl.addEventListener('keydown', (e) => {
-                if(e.key === 'Enter') {
-                    e.preventDefault(); // 阻止默认的回车行为
+                // Check for ENTER key (ASCII 13 or Key 'Enter')
+                if(e.key === 'Enter' || e.keyCode === 13) {
+                    e.preventDefault();
                     const val = inputEl.value.trim();
                     if(val) handleScan(val);
-                    inputEl.value = ''; // 清空
+                    inputEl.value = ''; 
                 }
             });
         };
 
-        // 强制聚焦输入框
         function focusInput() {
             const el = document.getElementById('scanner-input');
             if(el) {
+                // Prevent soft keyboard in many browsers
+                el.setAttribute('inputmode', 'none'); 
                 el.focus(); 
             }
         }
 
-        // === 模式切换 (略) ===
+        // === 模式切换 ===
         function toggleMode() {
             isGunMode = !isGunMode;
             const btn = document.getElementById('mode-btn');
@@ -289,51 +265,46 @@
             const body = document.getElementById('main-body');
 
             if (isGunMode) {
-                // 进入 PDA/枪模式
-                if(html5QrCode) html5QrCode.stop().catch(()=>{});
+                if(html5QrCode && html5QrCode.isScanning) html5QrCode.stop().catch(()=>{});
                 layerCamera.classList.add('hidden');
                 layerGun.classList.remove('hidden');
                 btn.innerText = "切换回手机模式";
                 btn.classList.replace('bg-gray-200', 'bg-blue-100');
                 badge.innerText = "PDA/枪模式 (云同步)";
                 badge.className = "text-[10px] bg-purple-100 text-purple-800 px-1 rounded";
-                
-                // 立即聚焦
                 setTimeout(focusInput, 100);
                 resetProcess();
             } else {
-                // 回到手机模式
                 layerCamera.classList.remove('hidden');
                 layerGun.classList.add('hidden');
                 btn.innerText = "切换到 PDA/枪模式";
                 btn.classList.replace('bg-blue-100', 'bg-gray-200');
                 badge.innerText = "手机模式 (云同步)";
                 badge.className = "text-[10px] bg-blue-100 text-blue-800 px-1 rounded";
-                body.className = "h-screen flex flex-col bg-gray-100 transition-colors duration-200"; // 重置背景
+                body.className = "h-screen flex flex-col bg-gray-100 transition-colors duration-200"; 
                 startCamera();
             }
         }
 
         // === 核心逻辑 ===
         function handleScan(rawCode) {
-            // 清理并标准化条码 (去除特殊字符，转大写)
             const code = rawCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
             if(!code) return;
 
             if (scanState === 'idle') {
-                // 阶段1：扫第一个码
+                // Stage 1: Scan A
                 firstCode = code;
                 scanState = 'pending';
                 playSound('scan');
                 renderGunUI('pending', code);
             } else {
-                // 阶段2：扫第二个码
+                // Stage 2: Scan B
                 if (code === firstCode) {
-                    showResultOverlay('重复扫描', 'warn');
+                    showResultOverlay('重复扫描 (Same Code)', 'warn');
                     return;
                 }
                 
-                // 修复 3: 立即更新 B 码显示，以便用户看到两个条码
+                // CRITICAL FIX: Update B code immediately for feedback
                 if(isGunMode) {
                     document.getElementById('text-b').innerText = code;
                     document.getElementById('box-b').className = "bg-orange-100 rounded-lg p-3 border-l-4 border-orange-500 shadow-md flex-1 flex flex-col justify-center relative";
@@ -344,20 +315,18 @@
         }
 
         function checkPair(a, b) {
-            // 修复 2: 确认 pairDatabase 不为空
-            if (pairDatabase.length === 0) {
+            // FIX: Check if database is empty BEFORE trying to scan
+            if (!pairDatabase || pairDatabase.length === 0) {
                  playSound('error');
-                 showResultOverlay('无配对数据，请导入', 'error');
+                 showResultOverlay('错误: 无配对数据 (No Data)', 'error');
                  flashScreen('error');
                  return;
             }
 
-            // 在云端同步的 pairDatabase 中查找
             const found = pairDatabase.some(p => {
-                // 同样清理数据库中的码，确保匹配逻辑严谨
                 const pa = p.a.toUpperCase().replace(/[^A-Z0-9]/g, '');
                 const pb = p.b.toUpperCase().replace(/[^A-Z0-9]/g, '');
-                // 允许 A-B 或 B-A 两种顺序匹配
+                // Allow A-B or B-A match
                 return (pa === a && pb === b) || (pa === b && pb === a);
             });
 
@@ -368,9 +337,8 @@
                 setTimeout(resetProcess, 1200);
             } else {
                 playSound('error');
-                showResultOverlay('错误 ERROR', 'error');
+                showResultOverlay('错误 ERROR (No Match)', 'error');
                 flashScreen('error');
-                // 错误保留稍长，便于查看
                 setTimeout(resetProcess, 2000); 
             }
         }
@@ -386,7 +354,7 @@
         }
 
         // === UI 渲染 (PDA模式专用) ===
-        function renderGunUI(state, code) {
+        function renderGunUI(state, code = '---') {
             const status = document.getElementById('gun-status');
             const boxA = document.getElementById('box-a');
             const textA = document.getElementById('text-a');
@@ -404,20 +372,19 @@
                 textB.innerText = "---";
             } else if (state === 'pending') {
                 status.innerText = "请扫描条码 B";
-                // 增强视觉效果
                 status.className = "text-3xl font-black text-blue-600 leading-tight animate-pulse border-b-2 border-blue-600 pb-1"; 
                 
-                // 增强 A 码视觉效果
+                // Highlight A
                 boxA.className = "bg-blue-50 rounded-lg p-3 border-l-4 border-blue-600 shadow-md flex-1 flex flex-col justify-center relative opacity-100 transition-all duration-300";
                 textA.innerText = code;
                 
+                // Indicate waiting for B
                 boxB.className = "bg-white rounded-lg p-3 border-l-4 border-gray-300 shadow-sm flex-1 flex flex-col justify-center relative opacity-100";
-                textB.innerText = "等待扫描...";
+                textB.innerText = "等待扫描 B...";
             }
         }
 
-        // (略：showResultOverlay, flashScreen, startCamera, applyCssZoom, playSound)
-
+        // === 提示和声音函数 (与之前相同) ===
         function showResultOverlay(msg, type) {
             const overlay = document.getElementById('result-overlay');
             const box = document.getElementById('result-box');
@@ -433,7 +400,7 @@
             } else if (type === 'error') {
                 box.className = "bg-red-600 text-white p-8 rounded-2xl shadow-2xl text-center transform scale-110";
                 icon.innerText = "❌";
-            } else if (type === 'info') { // 用于显示云同步状态
+            } else if (type === 'info') { 
                 box.className = "bg-gray-800 text-white p-8 rounded-2xl shadow-2xl text-center transform scale-110";
                 icon.innerText = "☁️";
             } else {
@@ -441,7 +408,6 @@
                 icon.innerText = "⚠️";
             }
 
-            // 错误提示保留更长时间
             setTimeout(() => overlay.classList.add('hidden'), type === 'error' ? 2000 : 800);
         }
 
@@ -483,8 +449,7 @@
             const t = audioCtx.currentTime;
             
             if(type==='success') {
-                o.frequency.setValueAtTime(880, t);
-                o.frequency.setValueAtTime(1760, t+0.1);
+                o.frequency.setValueAtTime(880, t); o.frequency.setValueAtTime(1760, t+0.1);
                 g.gain.setValueAtTime(0.5, t); g.gain.linearRampToValueAtTime(0, t+0.3);
                 o.start(t); o.stop(t+0.3);
             } else if(type==='error') {
@@ -499,15 +464,13 @@
         }
 
 
-        // === 数据操作 (已修复导入和状态管理) ===
+        // === 数据导入逻辑 (已修复弹窗关闭问题) ===
         function toggleSettings() { 
             const modal = document.getElementById('settings-modal');
             modal.classList.toggle('hidden'); 
             
-            // 修复 1 & 4: 确保关闭弹窗时重置所有文件输入状态
+            // Reset file input on close
             if(modal.classList.contains('hidden')) {
-                fileContentToSave = null;
-                selectedFileName = null;
                 document.getElementById('csv-file-input').value = ''; 
                 document.getElementById('file-status').innerText = '未选择文件。请选择包含两列数据的文件。';
             }
@@ -515,27 +478,27 @@
 
         function handleFileUpload(event) {
             const file = event.target.files[0];
+            const fileStatusEl = document.getElementById('file-status');
+            const dataInputEl = document.getElementById('data-input');
+
             if (!file) {
-                fileContentToSave = null;
-                selectedFileName = null;
-                document.getElementById('file-status').innerText = '未选择文件。请选择包含两列数据的文件。';
+                fileStatusEl.innerText = '未选择文件。请选择包含两列数据的文件。';
                 return;
             }
 
-            selectedFileName = file.name;
             const reader = new FileReader();
             
             reader.onload = (e) => {
-                fileContentToSave = e.target.result;
-                document.getElementById('file-status').innerText = `✅ 文件已加载: ${selectedFileName} (${(file.size / 1024).toFixed(2)} KB)。请点击“保存并生效”。`;
-                // 导入文件内容后，也将其填充到文本框，以便用户确认或编辑
-                document.getElementById('data-input').value = fileContentToSave; 
+                const content = e.target.result;
+                // 将文件内容填充到文本框，保存时以文本框为准
+                dataInputEl.value = content; 
+                fileStatusEl.innerText = `✅ 文件已加载: ${file.name} (${(file.size / 1024).toFixed(2)} KB)。请点击“保存并生效”。`;
             };
 
             reader.onerror = (e) => {
-                console.error("FileReader failed, falling back to paste method.", e);
-                fileContentToSave = null;
-                document.getElementById('file-status').innerHTML = `
+                console.error("FileReader failed:", e);
+                dataInputEl.value = '';
+                fileStatusEl.innerHTML = `
                     <span class="text-red-500 font-bold">❌ 文件读取失败！</span>
                     <span class="text-xs text-gray-500">请使用方法二，将文件内容复制粘贴到下方文本框。</span>
                 `;
@@ -550,7 +513,7 @@
                 return;
             }
             
-            // 优先级：始终使用文本框内容，因为它包含了文件导入或手动输入的所有内容
+            // 始终从文本框获取数据
             const raw = document.getElementById('data-input').value;
             
             if (!raw.trim()) {
@@ -561,9 +524,8 @@
             const lines = raw.split('\n');
             const dbArray = [];
             lines.forEach(l => {
-                // 兼容逗号(,)或制表符(\t)分割
+                // Parse lines, compatible with comma or tab
                 const p = l.split(/,|\t/).map(s=>s.trim()).filter(s=>s);
-                // 仅在找到两列有效数据时才保存
                 if(p.length >= 2) dbArray.push({a:p[0], b:p[1]});
             });
 
@@ -575,19 +537,17 @@
             const docRef = window.doc(db, PUBLIC_DOC_PATH);
             
             try {
-                // 存储数据数组和原始文本到云端
                 await window.setDoc(docRef, { 
                     pairs: dbArray,
-                    rawText: raw, // 存储原始文本方便下次编辑/查看
+                    rawText: raw, 
                     updatedAt: new Date().toISOString()
                 });
                 
-                // 修复 1: 成功保存后，关闭弹窗
+                // FIX: Successfully close modal after saving
                 toggleSettings(); 
                 
-                // loadData 监听器会自动更新 pairDatabase，这里提示成功即可
+                // The loadData listener handles updating the UI and pairDatabase
                 showResultOverlay(`导入并云同步 ${dbArray.length} 组`, 'success');
-                console.log("Data successfully saved to Firestore.");
 
             } catch (e) {
                 console.error("Error writing document:", e);
@@ -600,19 +560,17 @@
 
             const docRef = window.doc(db, PUBLIC_DOC_PATH);
 
-            // 实时监听配对数据，任何设备更新都会同步到这里
+            // Real-time listener
             window.onSnapshot(docRef, (docSnap) => {
                 if (docSnap.exists()) {
                     const data = docSnap.data();
-                    // 修复 2: 确保 pairDatabase 得到正确更新
+                    // CRITICAL FIX: Update the global pairDatabase
                     pairDatabase = data.pairs || []; 
+                    
                     document.getElementById('data-count').innerText = `已加载: ${pairDatabase.length} 组 (云同步)`;
                     document.getElementById('data-input').value = data.rawText || ''; 
                     
-                    // 确保状态提示正确
-                    document.getElementById('file-status').innerText = '未选择文件。请选择包含两列数据的文件。';
-
-                    console.log(`Data loaded from Firestore: ${pairDatabase.length} pairs.`);
+                    console.log(`Data loaded from Firestore: ${pairDatabase.length} pairs. Scan Ready!`);
                     showResultOverlay(`数据已同步 ${pairDatabase.length} 组`, 'info');
                 } else {
                     pairDatabase = [];
