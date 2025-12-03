@@ -32,6 +32,30 @@
             90% { opacity: 1; }
             100% { top: 90%; opacity: 0; }
         }
+        
+        /* 变焦滑块样式 */
+        input[type=range] {
+            -webkit-appearance: none;
+            width: 100%;
+            background: transparent;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 24px;
+            width: 24px;
+            border-radius: 50%;
+            background: #ffffff;
+            cursor: pointer;
+            margin-top: -10px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            cursor: pointer;
+            background: rgba(255,255,255,0.3);
+            border-radius: 2px;
+        }
     </style>
 </head>
 <body class="bg-gray-100 h-screen flex flex-col overflow-hidden">
@@ -87,9 +111,16 @@
                 <div class="scan-laser"></div>
             </div>
             
-            <p class="absolute bottom-16 text-white/90 text-sm font-medium bg-black/60 px-3 py-1 rounded-full backdrop-blur-sm">
-                将条码放入框内，拉开一点距离
+            <p class="absolute bottom-20 text-white/90 text-sm font-medium bg-black/60 px-3 py-1 rounded-full backdrop-blur-sm">
+                💡 扫不出？试着拉动下方滑块放大
             </p>
+
+            <!-- 变焦滑块 (Zoom Slider) -->
+            <div id="zoom-control" class="absolute bottom-6 left-8 right-8 pointer-events-auto flex items-center gap-3 opacity-0 transition-opacity duration-500">
+                <span class="text-white text-xs font-bold">1x</span>
+                <input type="range" id="zoom-slider" min="1" max="5" step="0.1" value="1" class="flex-1">
+                <span class="text-white text-xs font-bold">Max</span>
+            </div>
         </div>
 
         <!-- 启动按钮层 -->
@@ -103,7 +134,7 @@
             <button onclick="startScanning()" class="bg-white text-blue-900 px-8 py-3 rounded-xl font-bold text-lg shadow-lg active:scale-95 transition-all">
                 开启极速扫描
             </button>
-            <p class="mt-4 text-gray-500 text-xs max-w-[200px] text-center">建议保持光线充足，避免条码反光</p>
+            <p class="mt-4 text-gray-500 text-xs max-w-[200px] text-center">建议保持光线充足，使用变焦功能辅助扫描</p>
         </div>
         
         <!-- 结果弹窗 (居中显示) -->
@@ -162,11 +193,12 @@
         let audioContext = null;
         let isProcessing = false;
         let lastScannedCode = ""; 
-        let scanThrottleTimer = null;
+        let videoTrack = null;
+        let capabilities = {};
 
         window.onload = loadDataFromStorage;
 
-        // --- 音频引擎 (低延迟版) ---
+        // --- 音频引擎 ---
         function initAudio() {
             if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
             if (audioContext.state === 'suspended') audioContext.resume();
@@ -181,14 +213,12 @@
             const now = audioContext.currentTime;
             
             if (type === 'scan') {
-                // 扫描声：清脆短滴
                 osc.type = 'sine';
                 osc.frequency.setValueAtTime(1200, now);
                 gain.gain.setValueAtTime(0.1, now);
                 gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
                 osc.start(now); osc.stop(now + 0.1);
             } else if (type === 'success') {
-                // 成功：双音叮咚
                 osc.type = 'sine';
                 osc.frequency.setValueAtTime(800, now);
                 osc.frequency.setValueAtTime(1200, now + 0.1);
@@ -196,7 +226,6 @@
                 gain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
                 osc.start(now); osc.stop(now + 0.4);
             } else if (type === 'error') {
-                // 错误：低沉锯齿波
                 osc.type = 'sawtooth';
                 osc.frequency.setValueAtTime(150, now);
                 osc.frequency.linearRampToValueAtTime(100, now + 0.3);
@@ -206,15 +235,10 @@
             }
         }
 
-        // 【新增】条码清洗函数，去除解码噪音，统一大写
+        // --- 条码清洗 ---
         function cleanBarcode(code) {
             if (!code) return '';
-            // 移除非字母、非数字、非连字符/空格的字符，并转大写
-            // 目标：FBA-Sfgk01 -> CB-A-S-F-G-K-0-1
-            return code
-                .toUpperCase()
-                .replace(/[^A-Z0-9\-\s]/g, '') 
-                .trim();
+            return code.toUpperCase().replace(/[^A-Z0-9\-\s]/g, '').trim();
         }
 
         // --- 核心扫描逻辑 ---
@@ -228,27 +252,31 @@
             try {
                 html5QrCode = new Html5Qrcode("reader");
                 
-                // 【关键优化配置】
+                // 1. 暴力高分辨率配置
+                // 尝试强制使用高清分辨率，这对于识别细密的条形码至关重要
                 const config = {
-                    fps: 30, // 提升到30帧，极速扫描
+                    fps: 30, 
                     qrbox: function(viewfinderWidth, viewfinderHeight) {
-                        return { width: Math.floor(viewfinderWidth * 0.85), height: Math.floor(viewfinderHeight * 0.6) };
+                         // 使用更宽的扫描框
+                        return { width: Math.floor(viewfinderWidth * 0.9), height: Math.floor(viewfinderHeight * 0.5) };
                     },
                     aspectRatio: 1.0,
-                    // 强制要求高分辨率，改善条码识别精度
                     videoConstraints: {
                         facingMode: "environment",
-                        height: { ideal: 1280 } 
+                        // 强制请求高分辨率
+                        width: { min: 1280, ideal: 1920, max: 2560 },
+                        height: { min: 720, ideal: 1080, max: 1440 },
+                        // 尝试请求连续对焦模式 (在某些安卓/Chrome上有效)
+                        advanced: [{ focusMode: "continuous" }]
                     },
                     formatsToSupport: [ 
                         Html5QrcodeSupportedFormats.CODE_128,
                         Html5QrcodeSupportedFormats.CODE_39,
                         Html5QrcodeSupportedFormats.EAN_13,
-                        Html5QrcodeSupportedFormats.UPC_A,
-                        Html5QrcodeSupportedFormats.QR_CODE 
+                        Html5QrcodeSupportedFormats.UPC_A
                     ],
                     experimentalFeatures: {
-                        useBarCodeDetectorIfSupported: true // 强制尝试原生硬件加速
+                        useBarCodeDetectorIfSupported: true 
                     }
                 };
 
@@ -256,51 +284,81 @@
                     { facingMode: "environment" }, 
                     config, 
                     (decodedText) => {
-                        // 极速模式下的防抖逻辑
                         const now = Date.now();
                         const rawCode = decodedText.trim();
-                        
-                        // 如果和上次扫的一样，且时间间隔小于1.5秒，忽略（防止连发）
                         if (rawCode === lastScannedCode && (now - isProcessing) < 1500) return;
-                        
-                        // 开始处理
                         isProcessing = now;
                         lastScannedCode = rawCode;
                         handleScan(rawCode);
                     }
                 );
+
+                // 2. 启用变焦功能 (Zoom)
+                // 启动后获取摄像头能力，如果支持变焦，则显示滑块
+                setTimeout(enableZoomControl, 500);
+
             } catch (err) {
-                alert("无法启动相机：" + err);
+                alert("无法启动相机：" + err + "\n请尝试使用Safari浏览器并赋予相机权限。");
                 location.reload();
             }
         }
 
+        // --- 变焦控制逻辑 ---
+        function enableZoomControl() {
+            // 获取正在运行的视频轨道
+            if(html5QrCode && html5QrCode.getRunningTrackCapabilities) {
+                 // 官方API可能不直接暴露track，我们需要一些hack或者使用 HTML5 Video 元素的特性
+                 // 幸运的是 html5-qrcode 实例内部有 track 引用，但最好的方式是通过标准API重新获取
+                 const videoElement = document.querySelector("#reader video");
+                 if(videoElement && videoElement.srcObject) {
+                     const track = videoElement.srcObject.getVideoTracks()[0];
+                     if(track) {
+                         videoTrack = track;
+                         capabilities = track.getCapabilities();
+                         
+                         // 检查是否支持 zoom
+                         if(capabilities.zoom) {
+                             const zoomControl = document.getElementById('zoom-control');
+                             const slider = document.getElementById('zoom-slider');
+                             
+                             // 设置滑块范围
+                             slider.min = capabilities.zoom.min;
+                             slider.max = capabilities.zoom.max;
+                             slider.step = capabilities.zoom.step;
+                             slider.value = track.getSettings().zoom || 1;
+                             
+                             // 显示控件
+                             zoomControl.classList.remove('opacity-0');
+                             
+                             // 绑定事件
+                             slider.oninput = function() {
+                                 track.applyConstraints({
+                                     advanced: [{ zoom: parseFloat(this.value) }]
+                                 });
+                             };
+                         }
+                     }
+                 }
+            }
+        }
+
         function handleScan(rawCode) {
-            // 【应用数据清洗】
             const code = cleanBarcode(rawCode); 
 
             if (!firstScannedCode) {
-                // 阶段1：记录第一个
                 firstScannedCode = code;
                 beep('scan');
                 renderUI('pending', code);
                 showToast(`已录入: ${code}`, 'info');
             } else {
-                // 阶段2：比对
                 if (code === firstScannedCode) {
                     showToast("重复扫描！请扫另一个", 'warn');
                     return;
                 }
                 
-                // 注意：由于我们对输入的条码也进行了清洗（转大写和去特殊符号），
-                // 数据库中的数据也应该与清洗后的格式匹配。
-                // 建议用户导入数据库时就使用大写和不含特殊符号的数据。
                 const isMatch = pairDatabase.some(pair => {
-                    // 我们在数据库中存储的可能是原始数据，但在比较时必须用清洗后的数据
-                    // 这里假设用户数据库中的数据是规范的（无特殊符号，或已处理）
                     const cleanedPairA = cleanBarcode(pair.a);
                     const cleanedPairB = cleanBarcode(pair.b);
-                    
                     return (cleanedPairA === firstScannedCode && cleanedPairB === code) || 
                            (cleanedPairB === firstScannedCode && cleanedPairA === code);
                 });
@@ -308,19 +366,17 @@
                 if (isMatch) {
                     beep('success');
                     showToast("✅ 配对正确", 'success');
-                    // 延迟重置
                     setTimeout(() => resetScan(), 1200);
                 } else {
                     beep('error');
                     showToast("❌ 错误！无关联", 'error');
-                    // 错误时不重置，允许重试
                 }
             }
         }
 
         function resetScan() {
             firstScannedCode = null;
-            lastScannedCode = ""; // 清空记忆，允许重新扫同一个
+            lastScannedCode = ""; 
             renderUI('idle');
         }
 
@@ -370,7 +426,6 @@
                 content.className = "bg-gray-800/90 text-white px-6 py-4 rounded-xl shadow-xl flex flex-col items-center min-w-[150px] text-center";
             }
 
-            // 自动消失
             if (window.toastTimer) clearTimeout(window.toastTimer);
             window.toastTimer = setTimeout(() => {
                 toast.classList.add('hidden');
