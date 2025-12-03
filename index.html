@@ -204,7 +204,6 @@
         let isGunMode = false;
         let html5QrCode = null;
         let audioCtx = null;
-        // 新增：用于存储文件读取的内容和状态
         let fileContentToSave = null; 
         let selectedFileName = null; 
 
@@ -264,6 +263,7 @@
             // 兼容大部分PDA：它们通常模拟键盘输入并在最后发送 'Enter'
             inputEl.addEventListener('keydown', (e) => {
                 if(e.key === 'Enter') {
+                    e.preventDefault(); // 阻止默认的回车行为
                     const val = inputEl.value.trim();
                     if(val) handleScan(val);
                     inputEl.value = ''; // 清空
@@ -279,7 +279,7 @@
             }
         }
 
-        // === 模式切换 ===
+        // === 模式切换 (略) ===
         function toggleMode() {
             isGunMode = !isGunMode;
             const btn = document.getElementById('mode-btn');
@@ -332,11 +332,26 @@
                     showResultOverlay('重复扫描', 'warn');
                     return;
                 }
+                
+                // 修复 3: 立即更新 B 码显示，以便用户看到两个条码
+                if(isGunMode) {
+                    document.getElementById('text-b').innerText = code;
+                    document.getElementById('box-b').className = "bg-orange-100 rounded-lg p-3 border-l-4 border-orange-500 shadow-md flex-1 flex flex-col justify-center relative";
+                }
+                
                 checkPair(firstCode, code);
             }
         }
 
         function checkPair(a, b) {
+            // 修复 2: 确认 pairDatabase 不为空
+            if (pairDatabase.length === 0) {
+                 playSound('error');
+                 showResultOverlay('无配对数据，请导入', 'error');
+                 flashScreen('error');
+                 return;
+            }
+
             // 在云端同步的 pairDatabase 中查找
             const found = pairDatabase.some(p => {
                 // 同样清理数据库中的码，确保匹配逻辑严谨
@@ -355,6 +370,8 @@
                 playSound('error');
                 showResultOverlay('错误 ERROR', 'error');
                 flashScreen('error');
+                // 错误保留稍长，便于查看
+                setTimeout(resetProcess, 2000); 
             }
         }
 
@@ -364,6 +381,7 @@
             if(isGunMode) {
                 document.getElementById('scanner-input').value = '';
                 renderGunUI('idle');
+                focusInput();
             }
         }
 
@@ -386,15 +404,19 @@
                 textB.innerText = "---";
             } else if (state === 'pending') {
                 status.innerText = "请扫描条码 B";
-                status.className = "text-3xl font-black text-blue-600 leading-tight animate-pulse";
+                // 增强视觉效果
+                status.className = "text-3xl font-black text-blue-600 leading-tight animate-pulse border-b-2 border-blue-600 pb-1"; 
                 
-                boxA.className = "bg-blue-50 rounded-lg p-3 border-l-4 border-blue-500 shadow-md flex-1 flex flex-col justify-center relative";
+                // 增强 A 码视觉效果
+                boxA.className = "bg-blue-50 rounded-lg p-3 border-l-4 border-blue-600 shadow-md flex-1 flex flex-col justify-center relative opacity-100 transition-all duration-300";
                 textA.innerText = code;
                 
                 boxB.className = "bg-white rounded-lg p-3 border-l-4 border-gray-300 shadow-sm flex-1 flex flex-col justify-center relative opacity-100";
                 textB.innerText = "等待扫描...";
             }
         }
+
+        // (略：showResultOverlay, flashScreen, startCamera, applyCssZoom, playSound)
 
         function showResultOverlay(msg, type) {
             const overlay = document.getElementById('result-overlay');
@@ -431,7 +453,6 @@
             }, 800);
         }
 
-        // === 摄像头功能 (与之前相同) ===
         function startCamera() {
             if(isGunMode) return;
             html5QrCode = new Html5Qrcode("reader");
@@ -453,7 +474,6 @@
             if(v) v.style.transform = `scale(${val})`;
         }
 
-        // === 音频功能 (与之前相同) ===
         function playSound(type) {
             if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             if(audioCtx.state === 'suspended') audioCtx.resume();
@@ -478,20 +498,21 @@
             }
         }
 
-        // === 数据操作 (已改为 Firestore 云同步) ===
+
+        // === 数据操作 (已修复导入和状态管理) ===
         function toggleSettings() { 
-            document.getElementById('settings-modal').classList.toggle('hidden'); 
-            // Reset file status when modal opens/closes
-            if(document.getElementById('settings-modal').classList.contains('hidden')) {
+            const modal = document.getElementById('settings-modal');
+            modal.classList.toggle('hidden'); 
+            
+            // 修复 1 & 4: 确保关闭弹窗时重置所有文件输入状态
+            if(modal.classList.contains('hidden')) {
                 fileContentToSave = null;
                 selectedFileName = null;
-                // 清除文件输入框的内容
                 document.getElementById('csv-file-input').value = ''; 
                 document.getElementById('file-status').innerText = '未选择文件。请选择包含两列数据的文件。';
             }
         }
 
-        // 新增文件处理函数
         function handleFileUpload(event) {
             const file = event.target.files[0];
             if (!file) {
@@ -507,12 +528,11 @@
             reader.onload = (e) => {
                 fileContentToSave = e.target.result;
                 document.getElementById('file-status').innerText = `✅ 文件已加载: ${selectedFileName} (${(file.size / 1024).toFixed(2)} KB)。请点击“保存并生效”。`;
-                // 提示用户内容已准备好，但不要填充到文本框，避免混淆
-                console.log(`File ${selectedFileName} loaded successfully.`);
+                // 导入文件内容后，也将其填充到文本框，以便用户确认或编辑
+                document.getElementById('data-input').value = fileContentToSave; 
             };
 
             reader.onerror = (e) => {
-                // 如果环境阻止文件读取，我们提供清晰的指引
                 console.error("FileReader failed, falling back to paste method.", e);
                 fileContentToSave = null;
                 document.getElementById('file-status').innerHTML = `
@@ -521,7 +541,6 @@
                 `;
             };
 
-            // 尝试读取文件
             reader.readAsText(file);
         }
         
@@ -531,10 +550,8 @@
                 return;
             }
             
-            // 优先级：1. 文件内容 (如果已成功读取) 2. 文本框内容
-            const raw = fileContentToSave !== null 
-                        ? fileContentToSave 
-                        : document.getElementById('data-input').value;
+            // 优先级：始终使用文本框内容，因为它包含了文件导入或手动输入的所有内容
+            const raw = document.getElementById('data-input').value;
             
             if (!raw.trim()) {
                 showResultOverlay("导入内容为空", 'warn');
@@ -565,15 +582,10 @@
                     updatedAt: new Date().toISOString()
                 });
                 
-                // 清理状态
-                fileContentToSave = null;
-                selectedFileName = null;
-                document.getElementById('csv-file-input').value = '';
+                // 修复 1: 成功保存后，关闭弹窗
+                toggleSettings(); 
                 
-                // onSnapshot 会自动触发 loadData 逻辑，这里只需提示成功
-                document.getElementById('data-count').innerText = `已加载: ${dbArray.length} 组 (云同步)`;
-                document.getElementById('file-status').innerText = '未选择文件。请选择包含两列数据的文件。'; // Reset status
-                toggleSettings();
+                // loadData 监听器会自动更新 pairDatabase，这里提示成功即可
                 showResultOverlay(`导入并云同步 ${dbArray.length} 组`, 'success');
                 console.log("Data successfully saved to Firestore.");
 
@@ -592,18 +604,15 @@
             window.onSnapshot(docRef, (docSnap) => {
                 if (docSnap.exists()) {
                     const data = docSnap.data();
+                    // 修复 2: 确保 pairDatabase 得到正确更新
                     pairDatabase = data.pairs || []; 
                     document.getElementById('data-count').innerText = `已加载: ${pairDatabase.length} 组 (云同步)`;
                     document.getElementById('data-input').value = data.rawText || ''; 
                     
-                    // 确保在数据加载后，文件输入状态是清空的
-                    fileContentToSave = null;
-                    selectedFileName = null;
-                    document.getElementById('csv-file-input').value = '';
+                    // 确保状态提示正确
                     document.getElementById('file-status').innerText = '未选择文件。请选择包含两列数据的文件。';
 
                     console.log(`Data loaded from Firestore: ${pairDatabase.length} pairs.`);
-                    // 仅在数据更新时显示提示
                     showResultOverlay(`数据已同步 ${pairDatabase.length} 组`, 'info');
                 } else {
                     pairDatabase = [];
