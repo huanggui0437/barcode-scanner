@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>条码配对核查 Pro Max</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; touch-action: manipulation; }
+        /* 强制全屏黑底 */
+        #reader { width: 100%; height: 100%; background: #000; }
+        #reader video { object-fit: cover; width: 100%; height: 100%; }
+        /* 隐藏库自带的UI元素 */
+        #reader__dashboard_section_csr span, #reader__dashboard_section_swaplink { display: none !important; }
+        
+        /* 扫描动画 - 激光线 */
+        .scan-laser {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: rgba(255, 0, 0, 0.8);
+            box-shadow: 0 0 4px red;
+            animation: scan 2s infinite linear;
+            z-index: 20;
+        }
+        @keyframes scan {
+            0% { top: 10%; opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 1; }
+            100% { top: 90%; opacity: 0; }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 h-screen flex flex-col overflow-hidden">
+
+    <!-- 顶部导航 -->
+    <div class="bg-blue-700 text-white p-3 shadow-lg flex justify-between items-center z-50 shrink-0">
+        <h1 class="text-base font-bold tracking-wide">条码配对 Pro Max</h1>
+        <button onclick="toggleSettings()" class="bg-blue-800 px-3 py-1.5 rounded text-xs font-medium border border-blue-500 active:bg-blue-900">
+            📊 数据管理
+        </button>
+    </div>
+
+    <!-- 状态指示栏 (悬浮在扫描器上方) -->
+    <div id="status-bar" class="z-40 bg-white p-3 shadow-md border-b-2 border-gray-200">
+        <div class="flex justify-between items-center">
+            <div id="status-content" class="flex-1">
+                <p class="text-xs text-gray-500 font-medium">当前状态</p>
+                <h2 id="status-text" class="text-xl font-black text-gray-800 tracking-tight mt-0.5">请扫描第一个码</h2>
+            </div>
+            <!-- 清除按钮 (仅在需要时显示) -->
+            <button id="reset-btn" onclick="resetScan()" class="hidden bg-red-50 text-red-600 border border-red-200 px-4 py-2 rounded-lg font-bold text-sm active:scale-95 transition-transform">
+                重置/清除
+            </button>
+        </div>
+        
+        <!-- 动态结果展示区 -->
+        <div id="preview-box" class="hidden mt-2 pt-2 border-t border-gray-100">
+             <div class="flex items-center gap-2 text-sm">
+                <span class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-xs font-mono">CODE 1</span>
+                <span id="first-code-val" class="font-mono font-bold text-gray-700 truncate">...</span>
+             </div>
+        </div>
+    </div>
+
+    <!-- 核心扫描区 (占据剩余全部空间) -->
+    <div class="flex-1 relative bg-black overflow-hidden group">
+        <div id="reader" class="w-full h-full absolute inset-0"></div>
+        
+        <!-- 视觉辅助层: 既然我们要扫描长条码，给一个宽大的取景框 -->
+        <div id="scan-overlay" class="absolute inset-0 pointer-events-none hidden z-10 flex flex-col items-center justify-center">
+            <!-- 遮罩 -->
+            <div class="absolute inset-0 border-[40px] border-black/50 transition-all duration-300 box-border"></div>
+            
+            <!-- 扫描框线 -->
+            <div class="relative w-[85%] h-[40%] border-2 border-white/70 rounded-lg shadow-[0_0_0_9999px_rgba(0,0,0,0.4)]">
+                <!-- 四角装饰 -->
+                <div class="absolute top-0 left-0 w-6 h-6 border-t-4 border-l-4 border-blue-500 -mt-1 -ml-1 rounded-tl-sm"></div>
+                <div class="absolute top-0 right-0 w-6 h-6 border-t-4 border-r-4 border-blue-500 -mt-1 -mr-1 rounded-tr-sm"></div>
+                <div class="absolute bottom-0 left-0 w-6 h-6 border-b-4 border-l-4 border-blue-500 -mb-1 -ml-1 rounded-bl-sm"></div>
+                <div class="absolute bottom-0 right-0 w-6 h-6 border-b-4 border-r-4 border-blue-500 -mb-1 -mr-1 rounded-br-sm"></div>
+                
+                <!-- 激光扫描动画 -->
+                <div class="scan-laser"></div>
+            </div>
+            
+            <p class="absolute bottom-16 text-white/90 text-sm font-medium bg-black/60 px-3 py-1 rounded-full backdrop-blur-sm">
+                将条码放入框内，拉开一点距离
+            </p>
+        </div>
+
+        <!-- 启动按钮层 -->
+        <div id="camera-starter" class="absolute inset-0 flex flex-col items-center justify-center bg-zinc-900 z-30">
+            <div class="w-20 h-20 bg-blue-600 rounded-full flex items-center justify-center mb-6 shadow-blue-500/50 shadow-xl animate-pulse">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+            </div>
+            <button onclick="startScanning()" class="bg-white text-blue-900 px-8 py-3 rounded-xl font-bold text-lg shadow-lg active:scale-95 transition-all">
+                开启极速扫描
+            </button>
+            <p class="mt-4 text-gray-500 text-xs max-w-[200px] text-center">建议保持光线充足，避免条码反光</p>
+        </div>
+        
+        <!-- 结果弹窗 (居中显示) -->
+        <div id="result-toast" class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 hidden z-50 flex-col items-center justify-center pointer-events-none w-full px-4">
+             <div id="result-content" class="bg-gray-800 text-white px-6 py-4 rounded-xl shadow-2xl flex flex-col items-center min-w-[200px] text-center backdrop-blur-md bg-opacity-90">
+                <span id="result-icon" class="text-4xl mb-2">✅</span>
+                <span id="result-msg" class="font-bold text-lg">操作成功</span>
+             </div>
+        </div>
+    </div>
+
+    <!-- 设置弹窗 -->
+    <div id="settings-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-[60] hidden flex items-center justify-center p-4">
+        <div class="bg-white w-full max-w-sm rounded-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
+            <div class="p-4 border-b bg-gray-50 flex justify-between items-center">
+                <h3 class="font-bold text-gray-800">数据库管理</h3>
+                <button onclick="toggleSettings()" class="text-gray-400 hover:text-gray-600 p-1">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            
+            <div class="p-5 flex-1 overflow-y-auto">
+                <div class="space-y-4">
+                    <!-- 文件导入 -->
+                    <div class="border-2 border-dashed border-blue-200 rounded-xl p-4 bg-blue-50/50 hover:bg-blue-50 transition-colors text-center cursor-pointer relative">
+                        <input type="file" id="csv-file" accept=".csv,.txt" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" onchange="handleFileUpload(event)"/>
+                        <div class="text-blue-600 mb-1">
+                            <svg class="w-8 h-8 mx-auto mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
+                            <span class="font-bold text-sm">点击选择 CSV 文件</span>
+                        </div>
+                        <p class="text-xs text-gray-500">支持 CSV, TXT (逗号或Tab分隔)</p>
+                    </div>
+
+                    <!-- 文本预览/编辑 -->
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 mb-1.5 uppercase tracking-wider">数据预览</label>
+                        <textarea id="data-input" class="w-full h-32 border border-gray-300 rounded-lg p-3 text-xs font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" placeholder="A001,B001&#10;A002,B002"></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <div class="p-4 border-t bg-gray-50 grid grid-cols-2 gap-3">
+                <button onclick="clearData()" class="py-2.5 px-4 bg-white border border-gray-300 text-gray-700 rounded-lg font-bold text-sm hover:bg-gray-50">清空</button>
+                <button onclick="saveData()" class="py-2.5 px-4 bg-blue-600 text-white rounded-lg font-bold text-sm shadow-md hover:bg-blue-700 active:translate-y-0.5">保存生效</button>
+            </div>
+            <div class="bg-gray-100 py-1.5 text-center">
+                 <p id="data-count" class="text-[10px] text-gray-500 font-mono">当前数据: 0 组</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let pairDatabase = [];
+        let firstScannedCode = null;
+        let html5QrCode = null;
+        let audioContext = null;
+        let isProcessing = false;
+        let lastScannedCode = ""; 
+        let scanThrottleTimer = null;
+
+        window.onload = loadDataFromStorage;
+
+        // --- 音频引擎 (低延迟版) ---
+        function initAudio() {
+            if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioContext.state === 'suspended') audioContext.resume();
+        }
+        
+        function beep(type) {
+            if (!audioContext) initAudio();
+            const osc = audioContext.createOscillator();
+            const gain = audioContext.createGain();
+            osc.connect(gain);
+            gain.connect(audioContext.destination);
+            const now = audioContext.currentTime;
+            
+            if (type === 'scan') {
+                // 扫描声：清脆短滴
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(1200, now);
+                gain.gain.setValueAtTime(0.1, now);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+                osc.start(now); osc.stop(now + 0.1);
+            } else if (type === 'success') {
+                // 成功：双音叮咚
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(800, now);
+                osc.frequency.setValueAtTime(1200, now + 0.1);
+                gain.gain.setValueAtTime(0.3, now);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+                osc.start(now); osc.stop(now + 0.4);
+            } else if (type === 'error') {
+                // 错误：低沉锯齿波
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(150, now);
+                osc.frequency.linearRampToValueAtTime(100, now + 0.3);
+                gain.gain.setValueAtTime(0.5, now);
+                gain.gain.linearRampToValueAtTime(0.001, now + 0.5);
+                osc.start(now); osc.stop(now + 0.5);
+            }
+        }
+
+        // 【新增】条码清洗函数，去除解码噪音，统一大写
+        function cleanBarcode(code) {
+            if (!code) return '';
+            // 移除非字母、非数字、非连字符/空格的字符，并转大写
+            // 目标：FBA-Sfgk01 -> CB-A-S-F-G-K-0-1
+            return code
+                .toUpperCase()
+                .replace(/[^A-Z0-9\-\s]/g, '') 
+                .trim();
+        }
+
+        // --- 核心扫描逻辑 ---
+        async function startScanning() {
+            initAudio();
+            if(pairDatabase.length === 0) { alert("请先在右上角导入数据！"); toggleSettings(); return; }
+
+            document.getElementById('camera-starter').classList.add('hidden');
+            document.getElementById('scan-overlay').classList.remove('hidden');
+            
+            try {
+                html5QrCode = new Html5Qrcode("reader");
+                
+                // 【关键优化配置】
+                const config = {
+                    fps: 30, // 提升到30帧，极速扫描
+                    qrbox: function(viewfinderWidth, viewfinderHeight) {
+                        return { width: Math.floor(viewfinderWidth * 0.85), height: Math.floor(viewfinderHeight * 0.6) };
+                    },
+                    aspectRatio: 1.0,
+                    // 强制要求高分辨率，改善条码识别精度
+                    videoConstraints: {
+                        facingMode: "environment",
+                        height: { ideal: 1280 } 
+                    },
+                    formatsToSupport: [ 
+                        Html5QrcodeSupportedFormats.CODE_128,
+                        Html5QrcodeSupportedFormats.CODE_39,
+                        Html5QrcodeSupportedFormats.EAN_13,
+                        Html5QrcodeSupportedFormats.UPC_A,
+                        Html5QrcodeSupportedFormats.QR_CODE 
+                    ],
+                    experimentalFeatures: {
+                        useBarCodeDetectorIfSupported: true // 强制尝试原生硬件加速
+                    }
+                };
+
+                await html5QrCode.start(
+                    { facingMode: "environment" }, 
+                    config, 
+                    (decodedText) => {
+                        // 极速模式下的防抖逻辑
+                        const now = Date.now();
+                        const rawCode = decodedText.trim();
+                        
+                        // 如果和上次扫的一样，且时间间隔小于1.5秒，忽略（防止连发）
+                        if (rawCode === lastScannedCode && (now - isProcessing) < 1500) return;
+                        
+                        // 开始处理
+                        isProcessing = now;
+                        lastScannedCode = rawCode;
+                        handleScan(rawCode);
+                    }
+                );
+            } catch (err) {
+                alert("无法启动相机：" + err);
+                location.reload();
+            }
+        }
+
+        function handleScan(rawCode) {
+            // 【应用数据清洗】
+            const code = cleanBarcode(rawCode); 
+
+            if (!firstScannedCode) {
+                // 阶段1：记录第一个
+                firstScannedCode = code;
+                beep('scan');
+                renderUI('pending', code);
+                showToast(`已录入: ${code}`, 'info');
+            } else {
+                // 阶段2：比对
+                if (code === firstScannedCode) {
+                    showToast("重复扫描！请扫另一个", 'warn');
+                    return;
+                }
+                
+                // 注意：由于我们对输入的条码也进行了清洗（转大写和去特殊符号），
+                // 数据库中的数据也应该与清洗后的格式匹配。
+                // 建议用户导入数据库时就使用大写和不含特殊符号的数据。
+                const isMatch = pairDatabase.some(pair => {
+                    // 我们在数据库中存储的可能是原始数据，但在比较时必须用清洗后的数据
+                    // 这里假设用户数据库中的数据是规范的（无特殊符号，或已处理）
+                    const cleanedPairA = cleanBarcode(pair.a);
+                    const cleanedPairB = cleanBarcode(pair.b);
+                    
+                    return (cleanedPairA === firstScannedCode && cleanedPairB === code) || 
+                           (cleanedPairB === firstScannedCode && cleanedPairA === code);
+                });
+
+                if (isMatch) {
+                    beep('success');
+                    showToast("✅ 配对正确", 'success');
+                    // 延迟重置
+                    setTimeout(() => resetScan(), 1200);
+                } else {
+                    beep('error');
+                    showToast("❌ 错误！无关联", 'error');
+                    // 错误时不重置，允许重试
+                }
+            }
+        }
+
+        function resetScan() {
+            firstScannedCode = null;
+            lastScannedCode = ""; // 清空记忆，允许重新扫同一个
+            renderUI('idle');
+        }
+
+        // --- UI 渲染 ---
+        function renderUI(state, data) {
+            const statusText = document.getElementById('status-text');
+            const resetBtn = document.getElementById('reset-btn');
+            const previewBox = document.getElementById('preview-box');
+            const codeVal = document.getElementById('first-code-val');
+            const statusBar = document.getElementById('status-bar');
+
+            if (state === 'idle') {
+                statusText.innerText = "请扫描第一个码";
+                statusText.className = "text-xl font-black text-gray-800 tracking-tight mt-0.5";
+                statusBar.className = "z-40 bg-white p-3 shadow-md border-b-2 border-gray-200 transition-colors";
+                resetBtn.classList.add('hidden');
+                previewBox.classList.add('hidden');
+            } else if (state === 'pending') {
+                statusText.innerText = "扫描第二个码...";
+                statusText.className = "text-xl font-black text-blue-600 tracking-tight mt-0.5 animate-pulse";
+                statusBar.className = "z-40 bg-blue-50 p-3 shadow-md border-b-2 border-blue-200 transition-colors";
+                resetBtn.classList.remove('hidden');
+                previewBox.classList.remove('hidden');
+                codeVal.innerText = data;
+            }
+        }
+
+        function showToast(msg, type) {
+            const toast = document.getElementById('result-toast');
+            const content = document.getElementById('result-content');
+            const icon = document.getElementById('result-icon');
+            const txt = document.getElementById('result-msg');
+            
+            toast.classList.remove('hidden', 'flex');
+            toast.classList.add('flex');
+            
+            txt.innerText = msg;
+            
+            if(type === 'success') {
+                icon.innerText = "✅";
+                content.className = "bg-green-600 text-white px-8 py-6 rounded-2xl shadow-2xl flex flex-col items-center min-w-[200px] text-center transform scale-110";
+            } else if (type === 'error') {
+                icon.innerText = "❌";
+                content.className = "bg-red-600 text-white px-8 py-6 rounded-2xl shadow-2xl flex flex-col items-center min-w-[200px] text-center animate-bounce";
+            } else {
+                icon.innerText = "ℹ️";
+                content.className = "bg-gray-800/90 text-white px-6 py-4 rounded-xl shadow-xl flex flex-col items-center min-w-[150px] text-center";
+            }
+
+            // 自动消失
+            if (window.toastTimer) clearTimeout(window.toastTimer);
+            window.toastTimer = setTimeout(() => {
+                toast.classList.add('hidden');
+            }, type === 'error' ? 2500 : 1500);
+        }
+
+        // --- 数据功能 ---
+        function toggleSettings() {
+            const m = document.getElementById('settings-modal');
+            m.classList.toggle('hidden');
+            if(!m.classList.contains('hidden')) {
+                const raw = localStorage.getItem('raw_pair_data');
+                if(raw && !document.getElementById('data-input').value) {
+                    document.getElementById('data-input').value = raw;
+                }
+            }
+        }
+
+        function handleFileUpload(e) {
+            const f = e.target.files[0];
+            if(!f) return;
+            const r = new FileReader();
+            r.onload = (ev) => { document.getElementById('data-input').value = ev.target.result; };
+            r.readAsText(f);
+        }
+
+        function saveData() {
+            const val = document.getElementById('data-input').value.trim();
+            if(!val) return alert("空数据");
+            
+            const lines = val.split(/\r?\n/);
+            const db = [];
+            lines.forEach(l => {
+                const p = l.split(/,|\t|;/).map(x=>x.trim()).filter(x=>x);
+                if(p.length >= 2) db.push({a:p[0], b:p[1]});
+            });
+            
+            if(db.length===0) return alert("格式错误，每行需要两个数据");
+            
+            pairDatabase = db;
+            localStorage.setItem('barcode_pairs', JSON.stringify(db));
+            localStorage.setItem('raw_pair_data', val);
+            document.getElementById('data-count').innerText = `当前数据: ${db.length} 组`;
+            toggleSettings();
+            showToast(`成功导入 ${db.length} 组`, 'success');
+        }
+        
+        function clearData() {
+            if(!confirm("确认清空？")) return;
+            pairDatabase = [];
+            localStorage.removeItem('barcode_pairs');
+            localStorage.removeItem('raw_pair_data');
+            document.getElementById('data-input').value = "";
+            document.getElementById('data-count').innerText = "当前数据: 0 组";
+        }
+
+        function loadDataFromStorage() {
+            const s = localStorage.getItem('barcode_pairs');
+            if(s) {
+                pairDatabase = JSON.parse(s);
+                document.getElementById('data-count').innerText = `当前数据: ${pairDatabase.length} 组`;
+            }
+        }
+    </script>
+</body>
+</html>
